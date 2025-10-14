@@ -1,0 +1,8 @@
+*.npz
+*.pth
+*.png
+*.jpg
+*.pt
+*.zip
+datasets/
+saved_models/
