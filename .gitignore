@@ -7,11 +7,9 @@
 *.pth
 saved_models/
 models/
-datasets/
-datasets/mimic_perform_af_wfdb.zip
-datasets/mimic_perform_non_af_wfdb.zip
-datasets/mimic_perform_af_wfdb/
-datasets/mit-bih-atrial-fibrillation-database-1.0.0/
 *.zip
-models.zip
-datasets/
+logs/
+Datasets/
+.vscode/
+__pycache__/
+.ipynb_checkpoints/
