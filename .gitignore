@@ -4,6 +4,7 @@
 *.png
 *.jpg
 *.pt
+*.pth
 saved_models/
 models/
 datasets/
