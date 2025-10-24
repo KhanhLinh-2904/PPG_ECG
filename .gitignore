@@ -1,5 +1,6 @@
 *.npz
-
+*.hea
+*.dat
 *.png
 *.jpg
 *.pt
