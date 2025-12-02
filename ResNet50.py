@@ -1,7 +1,7 @@
 from torch import nn
 import torch
 import torch.nn.functional as F
-ECG_INPUT_LENGTH = 2400 
+ECG_INPUT_LENGTH = 2400
 OUTPUT_EMBED_DIM = 128  
 LAYERS = [3, 4, 6, 3] 
 BASE_WIDTH = 64
@@ -47,7 +47,7 @@ class Bottleneck1D(nn.Module):
         return out
     
 class ResNet50_1D(nn.Module):
-    def __init__(self, input_length=ECG_INPUT_LENGTH, layers=LAYERS, num_classes=OUTPUT_EMBED_DIM):
+    def __init__(self, layers=LAYERS, num_classes=OUTPUT_EMBED_DIM):
         super(ResNet50_1D, self).__init__()
         self.in_channels = BASE_WIDTH
 
@@ -63,14 +63,6 @@ class ResNet50_1D(nn.Module):
 
         self.avgpool = nn.AdaptiveAvgPool1d(1)
         self.fc = nn.Linear(BASE_WIDTH * 8 * EXPANSION, num_classes)
-
-        # # Khởi tạo trọng số
-        # for m in self.modules():
-        #     if isinstance(m, nn.Conv1d):
-        #         nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-        #     elif isinstance(m, nn.BatchNorm1d):
-        #         nn.init.constant_(m.weight, 1)
-        #         nn.init.constant_(m.bias, 0)
     
     def _make_layer(self, block, out_channels, blocks, stride=1):
         downsample = None
@@ -109,7 +101,6 @@ class ResNet50_1D(nn.Module):
 if __name__ == '__main__':
     
     model = ResNet50_1D(
-        input_length=ECG_INPUT_LENGTH,
         layers=LAYERS,
         num_classes=OUTPUT_EMBED_DIM
     )

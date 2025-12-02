@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 # --- THIẾT LẬP HẰNG SỐ ---
 OUTPUT_EMBED_DIM = 128 
-INPUT_LENGTH = 2400 
+INPUT_LENGTH = 300
 RECALL_K = [1,2,3,4, 5,6,7,8,9, 10]
 
 def calculate_recall_at_k(similarity_matrix, k_values):
@@ -169,7 +169,7 @@ if __name__ == '__main__':
         print("\n=> Lỗi: Không tìm thấy 'ecg_ppg_clip_best_model.pth'. Chạy đánh giá Retrieval với mô hình chưa huấn luyện (kết quả sẽ ngẫu nhiên/thấp).")
     
     # 3. Tải Dữ liệu Kiểm tra Retrieval (Sử dụng đường dẫn file và class LoadData mới)
-    test_retrieval_dataset = LoadData('datasets/MIMIC_test.npz') 
+    test_retrieval_dataset = LoadData('/home/linhhima/Pre_processing_data/datasets/MIMIC_new_test.npz')
     test_retrieval_loader = DataLoader(test_retrieval_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
     
     # 4. CHẠY ĐÁNH GIÁ RETRIEVAL

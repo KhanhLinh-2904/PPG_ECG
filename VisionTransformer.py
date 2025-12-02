@@ -115,6 +115,7 @@ class SignalTransformer(nn.Module):
             torch.zeros(x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=x.device)
         
         x =  torch.cat([class_token, x], dim=1)
+      
         x = x + self.positional_embedding.to(x.dtype)
         x = self.ln_pre(x)
         x = self.transformer(x)
@@ -124,8 +125,8 @@ class SignalTransformer(nn.Module):
         return x
 if __name__ == '__main__':
     # Tham số mô phỏng
-    INPUT_LENGTH = 2400     # Chiều dài của tín hiệu PPG
-    PATCH_SIZE = 40        # Kích thước miếng vá 1D
+    INPUT_LENGTH = 3750     # Chiều dài của tín hiệu PPG
+    PATCH_SIZE = 30        # Kích thước miếng vá 1D
     EMBED_DIM = 512        # Chiều nhúng (width)
     NUM_LAYERS = 6         # Số lớp Transformer
     NUM_HEADS = 8          # Số lượng Multi-Head Attention
