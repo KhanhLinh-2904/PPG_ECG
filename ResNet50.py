@@ -86,16 +86,18 @@ class ResNet50_1D(nn.Module):
         x = self.bn1(x)
         x = self.relu(x)
         x = self.maxpool(x)
-
-        x = self.layer1(x)
-        x = self.layer2(x)
-        x = self.layer3(x)
-        x = self.layer4(x)
-
-        x = self.avgpool(x)
+        
+        f1 = self.layer1(x) 
+        f2 = self.layer2(f1) 
+        f3 = self.layer3(f2) 
+        f4 = self.layer4(f3) 
+     
+        feature = f4
+        print("Feature map shape before avgpool: ", x.shape)
+        x = self.avgpool(feature)
         x = torch.flatten(x, 1)
         x = self.fc(x)
-        return x
+        return x, f4, [f1, f2, f3]
     
 
 if __name__ == '__main__':
@@ -112,7 +114,7 @@ if __name__ == '__main__':
     # Lan truyền thuận
     print(f"Shape of dummy ECG input: {dummy_ecg.shape}")
     
-    output_ecg_embedding = model(dummy_ecg)
+    output_ecg_embedding,_,_ = model(dummy_ecg)
     
     # Kết quả
     print(f"Shape of predicted ECG features output: {output_ecg_embedding.shape}")
