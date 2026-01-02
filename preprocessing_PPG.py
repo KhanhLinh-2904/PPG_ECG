@@ -126,7 +126,7 @@ def visualize_ppg_pipeline(raw_ppg, fs, title="Optimized Pipeline"):
 
     # 5. Final Normalize
     axes[4].plot(time, ppg_final, color='#d62728')
-    axes[4].set_title("5. Final: Normalize (z-score) for Model Input")
+    axes[4].set_title("5. Final: Normalize z-score for Model Input")
     axes[4].set_xlabel("Time (s)")
     axes[4].grid(True, alpha=0.3)
 

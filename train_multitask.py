@@ -1,7 +1,11 @@
-from CLIP import ECGDecoder_UNet, ECGEssembleCLIP
+from CLIP import ECGDecoder_DWT, ECGEssembleCLIP
 from Kullback import SoftCLIPLoss
 import torch
+import torch.nn as nn
 from torch.utils.data import DataLoader
+from NegPearsonLoss import NegPearsonLoss
+from ecg_reconstruction import SignalReconstructor
+from feature_domain import SignalPreprocessor
 from load_data import LoadData
 from torch.cuda.amp import autocast, GradScaler
 from torch.optim import AdamW
@@ -13,11 +17,11 @@ import random
 import os
 SEED = 44
 INPUT_LENGTH = 2400
-NUM_EPOCHS = 50
+NUM_EPOCHS = 30
 LEARNING_RATE = 1e-4
 BATCH_SIZE = 64
 WEIGHT_CONTRASTIVE = 0.1
-WEIGHT_L1 = 1.0
+WEIGHT_L1 = 2.0
 OUTPUT_EMBED_DIM = 128
 
 def set_seed(seed_value: int):
@@ -26,6 +30,7 @@ def set_seed(seed_value: int):
     np.random.seed(seed_value)
     os.environ["PYTHONHASHSEED"] = str(seed_value)
     print(f"Random seed set to: {seed_value}")
+
 
 def plot_losses(train_losses, title='Training Loss'):
     epochs = range(1, len(train_losses) + 1)
@@ -40,7 +45,7 @@ def plot_losses(train_losses, title='Training Loss'):
     plt.show()
 
 def train_epoch_combined(
-   model_clip, model_converter, dataloader, optimizer, contrast_loss, 
+   model_clip, model_converter, reconstructor, dataloader, optimizer, preprocessor, contrast_loss, 
             mse_loss, device, scaler,
     loss_weight_contrastive=1.0, loss_weight_mse=1.0
 ):
@@ -53,24 +58,32 @@ def train_epoch_combined(
     progress_bar = tqdm(dataloader, desc="Training (Multi-task)", unit="batch")
     
     for ecg, ppg, labels, groupID, _ in progress_bar:
-        ecg_target = ecg.to(device).float().unsqueeze(1)
-        ppg_input = ppg.to(device).float().unsqueeze(1)
-        
+        ecg_target = ecg.to(device).float()
+        ppg_input = ppg.to(device).float()
+     
+        ppg_features = preprocessor.process_ppg_scattering(ppg_input)
+        ecg_features = preprocessor.process_ecg_dwt(ecg_target)
+        print("ecg_features shape: ", ecg_features.shape)
+        print("ppg_features shape: ", ppg_features.shape)
+        ppg_features = ppg_features.to(device)
+        ecg_features = ecg_features.to(device)
         optimizer.zero_grad()
 
         # Mixed Precision Forward
         with autocast():
             # --- 1. Tác vụ Tương phản (Contrastive Task) ---
-            logits_per_ecg, ppg_embedding, feature_lists_PPG = model_clip(ecg_target, ppg_input)
+            logits_per_ecg, ppg_embedding, feature_lists_PPG = model_clip(ecg_features, ppg_features)
             c_loss = contrast_loss(logits_per_ecg, ecg_target)
             
             # --- 2. Tác vụ Tái tạo (Reconstruction Task) ---
-            predicted_ecg = model_converter(ppg_embedding, feature_lists_PPG)
+            predicted_ecg_feature = model_converter(ppg_embedding, feature_lists_PPG)
+            predicted_ecg = reconstructor.inverse_ecg_dwt(predicted_ecg_feature)
+            print("Predicted ECG shape: ", predicted_ecg.shape)
             l_loss = mse_loss(predicted_ecg, ecg_target)
-            # --- 3. Tổng Loss ---
             c_loss = loss_weight_contrastive * c_loss
             l_loss = loss_weight_mse * l_loss
             total_loss = c_loss + l_loss 
+
         # Scaled Backward
         scaler.scale(total_loss).backward()
         scaler.step(optimizer)
@@ -96,20 +109,20 @@ if __name__ == "__main__":
     print("Loading training dataset...")
     train_dataset = LoadData('datasets/normal_train.npz')
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True)
-
-    # val_dataset = LoadData('datasets/normal_val.npz')
-    # val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True)
+    preprocessor = SignalPreprocessor(signal_length=2400)
     model_clip =  ECGEssembleCLIP(embed_dim=OUTPUT_EMBED_DIM).to(device)
-    model_converter = ECGDecoder_UNet(
-        bottleneck_channels=2048
-    ).to(device)
-
-    contrast_loss = SoftCLIPLoss(teacher_temp=0.05, student_temp=0.07)
+    model_converter = ECGDecoder_DWT(
+            bottleneck_channels=2048,
+            output_channels=4,
+            target_length=306
+        ).to(device)
+    reconstructor = SignalReconstructor(dwt_wavelet='db4', dwt_level=3, original_length=2400)
+    contrast_loss = SoftCLIPLoss(teacher_temp=0.07, student_temp=0.05).to(device)
     mse_loss = torch.nn.MSELoss()
     params_to_optimize = list(model_clip.parameters()) + \
                          list(model_converter.parameters())
                          
-    optimizer = AdamW(params_to_optimize, lr=LEARNING_RATE, weight_decay=1e-4)
+    optimizer = AdamW(params_to_optimize, lr=LEARNING_RATE, weight_decay=1e-5)
 
     # --- Scaler ---
     scaler = GradScaler()
@@ -121,7 +134,7 @@ if __name__ == "__main__":
     for epoch in range(1, NUM_EPOCHS + 1):
         start = time.time()
         train_loss, train_contrast, train_l1 = train_epoch_combined(
-            model_clip, model_converter, train_loader, optimizer, contrast_loss, 
+            model_clip, model_converter, reconstructor, train_loader, optimizer, preprocessor, contrast_loss, 
             mse_loss, device, scaler,
             WEIGHT_CONTRASTIVE, WEIGHT_L1
         )
