@@ -47,14 +47,11 @@ class Bottleneck1D(nn.Module):
         return out
     
 class ResNet50_1D(nn.Module):
-    def __init__(self, input_channels=1, layers=LAYERS, num_classes=OUTPUT_EMBED_DIM):
-        """
-        Thêm tham số input_channels để linh hoạt số kênh đầu vào.
-        """
+    def __init__(self, layers=LAYERS, num_classes=OUTPUT_EMBED_DIM):
         super(ResNet50_1D, self).__init__()
         self.in_channels = BASE_WIDTH
 
-        self.conv1 = nn.Conv1d(input_channels, BASE_WIDTH, kernel_size=7, stride=2, padding=3, bias=False)
+        self.conv1 = nn.Conv1d(1, BASE_WIDTH, kernel_size=7, stride=2, padding=3, bias=False)
         self.bn1 = nn.BatchNorm1d(BASE_WIDTH)
         self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool1d(kernel_size=3, stride=2, padding=1)
@@ -66,7 +63,7 @@ class ResNet50_1D(nn.Module):
 
         self.avgpool = nn.AdaptiveAvgPool1d(1)
         self.fc = nn.Linear(BASE_WIDTH * 8 * EXPANSION, num_classes)
-        
+    
     def _make_layer(self, block, out_channels, blocks, stride=1):
         downsample = None
         if stride != 1 or self.in_channels != out_channels * EXPANSION:
@@ -82,9 +79,10 @@ class ResNet50_1D(nn.Module):
             layers.append(block(self.in_channels, out_channels))
 
         return nn.Sequential(*layers)
-        
+    
     def forward(self, x):
-        x = self.conv1(x)
+
+        x= self.conv1(x)
         x = self.bn1(x)
         x = self.relu(x)
         x = self.maxpool(x)
@@ -93,8 +91,9 @@ class ResNet50_1D(nn.Module):
         f2 = self.layer2(f1) 
         f3 = self.layer3(f2) 
         f4 = self.layer4(f3) 
-      
+     
         feature = f4
+        print("Feature map shape before avgpool: ", x.shape)
         x = self.avgpool(feature)
         x = torch.flatten(x, 1)
         x = self.fc(x)

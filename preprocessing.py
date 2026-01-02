@@ -105,6 +105,7 @@ class SignalProcessor:
     #         return np.zeros_like(signal_data)
     #     return (signal_data - min_val) / (max_val - min_val)
     
+    
     def normalize_signal(self, signal_data: np.ndarray) -> np.ndarray:
         mean_val = np.mean(signal_data)
         std_val = np.std(signal_data)
