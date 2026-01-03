@@ -6,9 +6,10 @@ from load_data import LoadData
 from CLIP import ECGDecoder_UNet, ECGEssembleCLIP, PPGtoECGConverter
 import random
 import os
+from scipy import signal
 
 # --- CONFIGURATION ---
-SEED = 44
+SEED = 40
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 BATCH_SIZE = 16 # Small batch for testing
 INPUT_LENGTH = 2400
@@ -18,12 +19,13 @@ CLIP_MODEL_PATH = "multitask_clip_best_model.pth"
 DECODER_MODEL_PATH = "multitask_decoder_best_model.pth"
 NUM_SAMPLES_TO_PLOT = 4 
 
-def set_seed(seed_value: int):
-    """Sets the random seed for reproducibility."""
-    random.seed(seed_value)
-    np.random.seed(seed_value)
-    os.environ["PYTHONHASHSEED"] = str(seed_value)
-    print(f"Random seed set to: {seed_value}")
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
 
 def load_models():
     """Initializes models and loads the trained weights."""
@@ -54,70 +56,270 @@ def load_models():
     
     return model_clip, model_converter
 
+def check_phase_shift(ecg_true, ecg_pred, fs=100, record_name="Unknown"):
+    """
+    Tính toán độ lệch pha (Phase Shift) giữa tín hiệu gốc và dự đoán.
+    
+    Args:
+        ecg_true (np.array): Tín hiệu ECG gốc (1D array).
+        ecg_pred (np.array): Tín hiệu ECG dự đoán (1D array).
+        fs (int): Tần số lấy mẫu (sampling rate), dùng để tính thời gian lệch.
+    """
+    # 1. Chuẩn hóa tín hiệu (Zero-mean) để loại bỏ ảnh hưởng của DC offset
+    true_norm = ecg_true - np.mean(ecg_true)
+    pred_norm = ecg_pred - np.mean(ecg_pred)
+    
+    # 2. Tính Cross-Correlation
+    # mode='full' trả về kết quả có độ dài len(true) + len(pred) - 1
+    correlation = signal.correlate(true_norm, pred_norm, mode='full')
+    
+    # 3. Tìm vị trí (index) có độ tương đồng cao nhất (đỉnh của correlation)
+    lags = signal.correlation_lags(len(true_norm), len(pred_norm), mode='full')
+    max_corr_index = np.argmax(correlation)
+    lag_samples = lags[max_corr_index] # Số mẫu bị lệch
+    
+    # Tính thời gian lệch (giây)
+    time_shift = lag_samples / fs
+    
+    print(f"--- Phase Shift Analysis for {record_name} ---")
+    print(f"Lag (Samples): {lag_samples}")
+    print(f"Time Shift: {time_shift:.4f} seconds")
+    
+    if lag_samples == 0:
+        print(">> KẾT LUẬN: Đồng bộ hoàn hảo (No phase shift).")
+    elif lag_samples > 0:
+        print(f">> KẾT LUẬN: ecg_pred đi SỚM hơn ecg_true {lag_samples} mẫu (Shift Left).")
+    else:
+        print(f">> KẾT LUẬN: ecg_pred đi TRỄ hơn ecg_true {abs(lag_samples)} mẫu (Shift Right).")
 
+    # 4. Vẽ biểu đồ minh họa
+    plt.figure(figsize=(10, 6))
+    
+    # Plot 1: Tín hiệu gốc vs Dự đoán
+    plt.subplot(2, 1, 1)
+    plt.plot(ecg_true, label='ECG True', color='black')
+    plt.plot(ecg_pred, label='ECG Pred', color='red', linestyle='--')
+    plt.title(f'Original Signals (Lag: {lag_samples} samples)')
+    plt.legend()
+    plt.grid(True)
+    
+    # Plot 2: Tín hiệu sau khi đã sửa lệch pha (Shifted correction)
+    # Dịch chuyển ecg_pred để khớp với ecg_true
+    plt.subplot(2, 1, 2)
+    if lag_samples > 0:
+        # Pred đi sớm -> cần đẩy lùi ra sau (chèn 0 vào đầu)
+        ecg_pred_corrected = np.pad(ecg_pred, (lag_samples, 0), 'constant')[:len(ecg_true)]
+    elif lag_samples < 0:
+         # Pred đi trễ -> cần cắt bớt đầu
+        ecg_pred_corrected = np.pad(ecg_pred, (0, abs(lag_samples)), 'constant')[abs(lag_samples):]
+    else:
+        ecg_pred_corrected = ecg_pred
+
+    plt.plot(ecg_true, label='ECG True', color='black')
+    plt.plot(ecg_pred_corrected, label='ECG Pred (Corrected)', color='green', linestyle='--')
+    plt.title('Signals after shifting correction')
+    plt.legend()
+    plt.grid(True)
+    
+    plt.tight_layout()
+    plt.show()
+
+def check_phase_shift_and_error(ecg_true, ecg_pred, fs=100, record_name="Unknown"):
+    """
+    Tính toán độ lệch pha, sửa tín hiệu và hiển thị Error Signal sau khi sửa.
+    """
+    # Đảm bảo input là numpy array 1D
+    ecg_true = np.array(ecg_true).flatten()
+    ecg_pred = np.array(ecg_pred).flatten()
+
+    # 1. Chuẩn hóa tín hiệu (Zero-mean) để tính correlation chính xác
+    true_norm = ecg_true - np.mean(ecg_true)
+    pred_norm = ecg_pred - np.mean(ecg_pred)
+    
+    # 2. Tính Cross-Correlation
+    correlation = signal.correlate(true_norm, pred_norm, mode='full')
+    lags = signal.correlation_lags(len(true_norm), len(pred_norm), mode='full')
+    
+    # 3. Tìm độ lệch (Lag) tốt nhất
+    max_corr_index = np.argmax(correlation)
+    lag_samples = lags[max_corr_index]
+    time_shift = lag_samples / fs
+    
+    # 4. Tạo tín hiệu đã sửa pha (Corrected Prediction)
+    # Logic: Giữ nguyên True, dịch chuyển Pred để khớp True
+    if lag_samples > 0:
+        # Pred đang đi SỚM (bên trái) so với True -> Cần đẩy sang PHẢI (thêm đệm vào đầu)
+        # Pad (trước, sau) -> Pad (lag, 0)
+        ecg_pred_corrected = np.pad(ecg_pred, (lag_samples, 0), 'constant')[:len(ecg_true)]
+        shift_msg = f"ECG prediction lags before ECG Groundtruth. Needs a left shift of {abs_lag} samples."
+    elif lag_samples < 0:
+        # Pred đang đi TRỄ (bên phải) so với True -> Cần kéo sang TRÁI (cắt bớt đầu)
+        abs_lag = abs(lag_samples)
+        # Pad (0, lag) để giữ độ dài rồi cắt đầu
+        ecg_pred_corrected = np.pad(ecg_pred, (0, abs_lag), 'constant')[abs_lag:]
+        shift_msg = f"ECG prediction lags behind ECG Groundtruth. Needs a left shift of {abs_lag} samples."
+    else:
+        ecg_pred_corrected = ecg_pred
+        shift_msg = "2 signals are synchronized."
+
+    # 5. Tính toán Error Signal
+    error_before = ecg_true - ecg_pred
+    error_after = ecg_true - ecg_pred_corrected # Đây là cái bạn cần
+
+    # --- IN KẾT QUẢ ---
+    print(f"\n--- Phân tích Pha & Sai số: {record_name} ---")
+    print(f"Lag (Samples): {lag_samples}")
+    print(f"Time Shift   : {time_shift:.4f}s")
+    print(f"HƯỚNG DẪN    : {shift_msg}")
+    print(f"Mean Abs Error (Trước sửa): {np.mean(np.abs(error_before)):.4f}")
+    print(f"Mean Abs Error (Sau sửa)  : {np.mean(np.abs(error_after)):.4f}")
+
+    # --- VẼ BIỂU ĐỒ ---
+    plt.figure(figsize=(12, 10))
+    t = np.arange(len(ecg_true))
+
+    # Plot 1: Gốc (Chưa sửa)
+    plt.subplot(3, 1, 1)
+    plt.plot(t, ecg_true, 'k', label='ECG Ground Truth', linewidth=1.5, alpha=0.7)
+    plt.plot(t, ecg_pred, 'r--', label='ECG Prediction', linewidth=1.5)
+    plt.title(f"1. Original signal (Not Shifted) - {shift_msg}")
+    plt.legend(loc='upper right')
+    plt.grid(True, alpha=0.3)
+
+    # Plot 2: Đã sửa (Đồng bộ)
+    plt.subplot(3, 1, 2)
+    plt.plot(t, ecg_true, 'k', label='ECG Ground Truth', linewidth=1.5, alpha=0.7)
+    plt.plot(t, ecg_pred_corrected, 'g--', label='Shifted ECG Prediction', linewidth=1.5)
+    plt.title("2. After shifting signal (Shifted)")
+    plt.legend(loc='upper right')
+    plt.grid(True, alpha=0.3)
+
+    # Plot 3: Error Signal (So sánh Trước và Sau)
+    plt.subplot(3, 1, 3)
+    # Vẽ Error cũ mờ đi để làm nền
+    plt.plot(t, error_before, color='gray', alpha=0.3, label='Error Before Shift')
+    # Vẽ Error mới đậm lên
+    plt.plot(t, error_after, color='purple', label='Error After Shift')
+    plt.fill_between(t, error_after, color='purple', alpha=0.2)
+    
+    plt.title("3. Error Signal: Before vs After Shift")
+    plt.ylabel("Difference (True - Pred)")
+    plt.xlabel("Samples")
+    plt.legend(loc='upper right')
+    plt.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.show()
 
 def visualize_results(ppg, ecg_true, ecg_pred, sample_idx, record_name):
     """
     Draws 4 subplots: PPG, True ECG, Predicted ECG, Error Signal.
     Includes record_name in the title.
     """
-    # Calculate Error Signal (Difference)
+    
     error_signal = ecg_true - ecg_pred
+    print(f"Visualizing results for Record: {record_name}")
+    # print("ecg_true: ", ecg_true)
+    # print("ecg_pred: ", ecg_pred)
+    # print("error_signal: ", error_signal)
+    check_phase_shift_and_error(ecg_true, ecg_pred, fs=125, record_name=record_name)
     
-    # Create Time Axis (optional, assuming indices)
-    t = np.arange(len(ppg))
+    #################################################################################
+    # t = np.arange(len(ppg))
 
-    plt.figure(figsize=(12, 10))
+    # plt.figure(figsize=(12, 10))
     
-    # --- CẬP NHẬT: Thêm tên Record vào tiêu đề chính ---
-    plt.suptitle(f"Record: {record_name}", fontsize=16, fontweight='bold')
+    # # Tiêu đề chính
+    # plt.suptitle(f"Record: {record_name}", fontsize=16, fontweight='bold')
 
-    # 1. PPG Input
-    plt.subplot(4, 1, 1)
-    plt.plot(t, ppg, color='green', label='Input PPG')
-    plt.title("Input PPG Signal")
-    plt.ylabel("Amplitude")
-    plt.legend(loc='upper right')
-    plt.grid(True, alpha=0.3)
+    # # 1. PPG Input (Giữ riêng ở trên cùng)
+    # plt.subplot(3, 1, 1)
+    # plt.plot(t, ppg, color='green', label='Input PPG', linewidth=1.5)
+    # plt.title("Input PPG Signal")
+    # plt.ylabel("Amplitude")
+    # plt.legend(loc='upper right')
+    # plt.grid(True, alpha=0.3)
 
-    # 2. Ground Truth ECG
-    plt.subplot(4, 1, 2)
-    plt.plot(t, ecg_true, color='blue', label='Ground Truth ECG')
-    plt.title("Ground Truth ECG")
-    plt.ylabel("Amplitude")
-    plt.legend(loc='upper right')
-    plt.grid(True, alpha=0.3)
+    # # 2. Comparison: Ground Truth vs Predicted (CÙNG TRÊN 1 TRỤC)
+    # plt.subplot(3, 1, 2)
+    # plt.plot(t, ecg_true, color='black', label='Ground Truth ECG', linewidth=1.5, alpha=0.8)
+    # plt.plot(t, ecg_pred, color='red', label='Predicted ECG', linestyle='--', linewidth=1.5)
+    # plt.title("Comparison: Ground Truth vs Predicted ECG")
+    # plt.ylabel("Amplitude")
+    # plt.legend(loc='upper right')
+    # plt.grid(True, alpha=0.3)
 
-    # 3. Predicted ECG
-    plt.subplot(4, 1, 3)
-    plt.plot(t, ecg_pred, color='red', label='Predicted ECG')
-    plt.title("Predicted ECG (Reconstructed)")
-    plt.ylabel("Amplitude")
-    plt.legend(loc='upper right')
-    plt.grid(True, alpha=0.3)
+    # # 3. Error Signal (Giữ riêng ở dưới cùng để xem độ lệch)
+    # plt.subplot(3, 1, 3)
+    # plt.plot(t, error_signal, color='purple', label='Error (True - Pred)')
+    # plt.fill_between(t, error_signal, color='purple', alpha=0.2) # Tô màu vùng lỗi
+    # plt.title("Error Signal")
+    # plt.xlabel("Time Samples")
+    # plt.ylabel("Difference")
+    # plt.legend(loc='upper right')
+    # plt.grid(True, alpha=0.3)
 
-    # 4. Error Signal
-    plt.subplot(4, 1, 4)
-    plt.plot(t, error_signal, color='purple', label='Error (True - Pred)')
-    plt.fill_between(t, error_signal, color='purple', alpha=0.2) # Shading
-    plt.title("Error Signal")
-    plt.xlabel("Time Samples")
-    plt.ylabel("Difference")
-    plt.legend(loc='upper right')
-    plt.grid(True, alpha=0.3)
+    # plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    # plt.show()
 
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    plt.show()
+    #################################################################################
+
+    # # Calculate Error Signal (Difference)
+    # # Create Time Axis (optional, assuming indices)
+    # t = np.arange(len(ppg))
+
+    # plt.figure(figsize=(12, 10))
+    
+    # # --- CẬP NHẬT: Thêm tên Record vào tiêu đề chính ---
+    # plt.suptitle(f"Record: {record_name}", fontsize=16, fontweight='bold')
+
+    # # 1. PPG Input
+    # plt.subplot(4, 1, 1)
+    # plt.plot(t, ppg, color='green', label='Input PPG')
+    # plt.title("Input PPG Signal")
+    # plt.ylabel("Amplitude")
+    # plt.legend(loc='upper right')
+    # plt.grid(True, alpha=0.3)
+
+    # # 2. Ground Truth ECG
+    # plt.subplot(4, 1, 2)
+    # plt.plot(t, ecg_true, color='blue', label='Ground Truth ECG')
+    # plt.title("Ground Truth ECG")
+    # plt.ylabel("Amplitude")
+    # plt.legend(loc='upper right')
+    # plt.grid(True, alpha=0.3)
+
+    # # 3. Predicted ECG
+    # plt.subplot(4, 1, 3)
+    # plt.plot(t, ecg_pred, color='red', label='Predicted ECG')
+    # plt.title("Predicted ECG (Reconstructed)")
+    # plt.ylabel("Amplitude")
+    # plt.legend(loc='upper right')
+    # plt.grid(True, alpha=0.3)
+
+    # # 4. Error Signal
+    # plt.subplot(4, 1, 4)
+    # plt.plot(t, error_signal, color='purple', label='Error (True - Pred)')
+    # plt.fill_between(t, error_signal, color='purple', alpha=0.2) # Shading
+    # plt.title("Error Signal")
+    # plt.xlabel("Time Samples")
+    # plt.ylabel("Difference")
+    # plt.legend(loc='upper right')
+    # plt.grid(True, alpha=0.3)
+
+    # plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    # plt.show()
 
 def run_test():
-    set_seed(SEED)
+    g = torch.Generator()
+    g.manual_seed(SEED)
     # Load Models
     model_clip, model_converter = load_models()
 
     # Load Data
     try:
         test_dataset = LoadData(TEST_DATA_PATH)
-        test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=True) # Shuffle to get random samples
+        test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=True)
         print(f"Loaded dataset from {TEST_DATA_PATH}")
     except Exception as e:
         print(f"Error loading data: {e}")
@@ -177,5 +379,5 @@ def run_test():
                         return
 
 if __name__ == "__main__":
-    
+    set_seed(SEED)
     run_test()

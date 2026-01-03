@@ -528,8 +528,8 @@ if __name__ == "__main__":
     # records_sample = ['mimic_perform_non_af_001', 'mimic_perform_non_af_002', 'mimic_perform_non_af_003', 
     #                   'mimic_perform_non_af_007', 'mimic_perform_non_af_009', 'mimic_perform_non_af_015',
     #                   'mimic_perform_non_af_005', 'mimic_perform_non_af_013', 'mimic_perform_non_af_016']
-    records_sample = ['mimic_perform_non_af_002']
-    # records_sample = ['mimic_perform_non_af_001', 'mimic_perform_non_af_002', 'mimic_perform_non_af_013', 'mimic_perform_non_af_016']
+    # records_sample = ['mimic_perform_non_af_002']
+    records_sample = ['mimic_perform_non_af_001', 'mimic_perform_non_af_002', 'mimic_perform_non_af_013', 'mimic_perform_non_af_016']
     # records_sample = ['mimic_perform_non_af_001', 'mimic_perform_non_af_002',
     #                 'mimic_perform_non_af_003', 'mimic_perform_non_af_004',
     #                 'mimic_perform_non_af_005', 'mimic_perform_non_af_006',

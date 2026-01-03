@@ -16,7 +16,7 @@ from multitask_loss import CombinedLoss
 # --- CÁC HẰNG SỐ (CONSTANTS) ---
 SEED = 44
 INPUT_LENGTH = 2400
-NUM_EPOCHS = 100
+NUM_EPOCHS = 200
 LEARNING_RATE = 1e-4
 BATCH_SIZE = 64
 WEIGHT_CONTRASTIVE = 0.1
@@ -24,12 +24,12 @@ WEIGHT_L1 = 1.0       # Thực tế là MSE weight trong code của bạn
 WEIGHT_PEARSON = 0.5  # Trọng số cho Pearson Loss (thường < 1 để cân bằng)
 OUTPUT_EMBED_DIM = 128
 
-def set_seed(seed_value: int):
-    """Sets the random seed for reproducibility."""
-    random.seed(seed_value)
-    np.random.seed(seed_value)
-    os.environ["PYTHONHASHSEED"] = str(seed_value)
-    print(f"Random seed set to: {seed_value}")
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 def plot_losses_combined(losses_dict, title='Training Losses'):
     """Vẽ tất cả các thành phần loss trên cùng một biểu đồ để so sánh"""
