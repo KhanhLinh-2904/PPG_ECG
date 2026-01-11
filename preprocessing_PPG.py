@@ -663,13 +663,13 @@ if __name__ == "__main__":
             
         ppg = signal_data[:, 0]
         samples_to_plot = 10 * fs 
-        visualize_ppg_pipeline(ppg[:samples_to_plot], fs, title=record_name)
+        # visualize_ppg_pipeline(ppg[:samples_to_plot], fs, title=record_name)
         # visualize_fft_process(ppg[:samples_to_plot], fs, title=record_name)
         # visualize_dc(ppg[:samples_to_plot], fs, title=record_name)
         # visualize_spike_removal_step(ppg[:samples_to_plot], fs, title=record_name)
         # survey_sigma_factors(ppg[:samples_to_plot], fs, title=record_name)
         # interactive_sigma_tuner(ppg[:samples_to_plot], fs, title=record_name)
-        # optimize_sigma_with_kurtosis(ppg[:samples_to_plot], fs, title=record_name)
+        optimize_sigma_with_kurtosis(ppg[:samples_to_plot], fs, title=record_name)
 
 
         

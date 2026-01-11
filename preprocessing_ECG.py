@@ -394,7 +394,7 @@ def visualize_preprocessing_steps(raw_ecg: np.ndarray, fs: float, title: str = "
     # Plot 3: Notch
     axes[2].plot(time_axis, signal_notch, color='#2ca02c', alpha=0.8, linewidth=1) # Màu xanh lá
     axes[2].set_ylabel("Amplitude")
-    axes[2].set_title("3. After Notch Filter (50Hz Removal)", loc='left', fontweight='bold', color='#2ca02c')
+    axes[2].set_title("3. After Notch Filter (60Hz Removal)", loc='left', fontweight='bold', color='#2ca02c')
     axes[2].grid(True, linestyle='--', alpha=0.5)
 
     # Plot 4: Normalized
@@ -428,7 +428,7 @@ if __name__ == "__main__":
         ecg = signal_data[:, 1]
         samples_to_plot = 10 * fs
         # visualize_fft_bandpass(ecg[:samples_to_plot], fs=fs, lowcut=0.5, highcut=100.0, title=record_name)
-        visualize_notch_filter(ecg[:samples_to_plot], fs=fs, notch_freq=60.0, Q=30.0, title=record_name)
+        # visualize_notch_filter(ecg[:samples_to_plot], fs=fs, notch_freq=60.0, Q=30.0, title=record_name)
         # visualize_spike_removal(ecg[:samples_to_plot], fs=fs, sigma_factor=10, title=record_name)
         # find_optimal_sigma(ecg[:samples_to_plot], fs=fs, title=record_name)
-        # visualize_preprocessing_steps(ecg[:samples_to_plot], fs=fs, title=record_name)
+        visualize_preprocessing_steps(ecg[:samples_to_plot], fs=fs, title=record_name)

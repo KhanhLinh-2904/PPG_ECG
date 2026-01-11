@@ -133,7 +133,7 @@ class SignalProcessor:
         filtered_bandpass = self._butter_bandpass(ecg_signal, lowcut=0.5, highcut=100.0, order=5)
         filtered_notch = self._notch_filter_ecg(filtered_bandpass, notch_freq=50, Q=30)
         ecg_normalized = self.normalize_signal(filtered_notch)
-        return filtered_notch
+        return ecg_normalized
 
 # --- (DATA VISUALIZER CLASS) ---
 
@@ -386,45 +386,45 @@ def load_and_slice_all_signals(datapath: str, record_list: List[str]):
         ppg_preprocessed = processor.align_signals_cross_correlation(ecg_preprocessed, ppg_preprocessed)[0]
         # visualizer.visualize_sliding_record(record_name, ppg_preprocessed, ecg_preprocessed)
         # visualizer.visualize_sliding_record(record_name, ppg_preprocessed, ppg)
-        # visualizer.visualize_specific_segment(record_name, ppg_preprocessed[:samples_to_plot], ecg_preprocessed[:samples_to_plot])
+        visualizer.visualize_specific_segment(record_name, ppg_preprocessed[:samples_to_plot], ecg_preprocessed[:samples_to_plot])
 
 
 
-        min_len = min(len(ppg_preprocessed), len(ecg_preprocessed))
-        print("Min length of signals: ", min_len)
-        if min_len < SLICE_LENGTH:
-            continue
-        start_idx = 0
-        prev_ppg = 0
-        prev_ecg = 0
-        while start_idx + SLICE_LENGTH <= min_len:
+    #     min_len = min(len(ppg_preprocessed), len(ecg_preprocessed))
+    #     print("Min length of signals: ", min_len)
+    #     if min_len < SLICE_LENGTH:
+    #         continue
+    #     start_idx = 0
+    #     prev_ppg = 0
+    #     prev_ecg = 0
+    #     while start_idx + SLICE_LENGTH <= min_len:
            
-            ppg_slice = ppg_preprocessed[start_idx:start_idx + SLICE_LENGTH]
-            ecg_slice = ecg_preprocessed[start_idx:start_idx + SLICE_LENGTH]
-            if start_idx == 0:
-                prev_ppg = ppg_slice
-                prev_ecg = ecg_slice
-            else:
-                prev_ppg = record_ppgs[-1]
-                prev_ecg = record_ecgs[-1]
-            ppg_corr = get_max_cross_correlation_score(prev_ppg, ppg_slice)    
-            ecg_corr = get_max_cross_correlation_score(prev_ecg, ecg_slice)  
-            print("-----------------------")
-            print("ppg_corr: ", ppg_corr)  
-            print("ecg_corr: ", ecg_corr)  
-            print("-----------------------")
+    #         ppg_slice = ppg_preprocessed[start_idx:start_idx + SLICE_LENGTH]
+    #         ecg_slice = ecg_preprocessed[start_idx:start_idx + SLICE_LENGTH]
+    #         if start_idx == 0:
+    #             prev_ppg = ppg_slice
+    #             prev_ecg = ecg_slice
+    #         else:
+    #             prev_ppg = record_ppgs[-1]
+    #             prev_ecg = record_ecgs[-1]
+    #         ppg_corr = get_max_cross_correlation_score(prev_ppg, ppg_slice)    
+    #         ecg_corr = get_max_cross_correlation_score(prev_ecg, ecg_slice)  
+    #         print("-----------------------")
+    #         print("ppg_corr: ", ppg_corr)  
+    #         print("ecg_corr: ", ecg_corr)  
+    #         print("-----------------------")
 
-            # or ppg_corr <= 0.7 or ecg_corr <= 0.3
-            if np.isnan(ppg_slice).any() or np.isnan(ecg_slice).any():
-                start_idx += OVERLAP
-                continue
+    #         # or ppg_corr <= 0.7 or ecg_corr <= 0.3
+    #         if np.isnan(ppg_slice).any() or np.isnan(ecg_slice).any():
+    #             start_idx += OVERLAP
+    #             continue
 
-            record_ppgs.append(ppg_slice)
-            record_ecgs.append(ecg_slice)
-            record_names.append(record_name)
-            start_idx += OVERLAP
-    print("Tổng số segments PPG sau khi cắt: ", len(record_ppgs))
-    return record_ppgs, record_ecgs, record_names
+    #         record_ppgs.append(ppg_slice)
+    #         record_ecgs.append(ecg_slice)
+    #         record_names.append(record_name)
+    #         start_idx += OVERLAP
+    # print("Tổng số segments PPG sau khi cắt: ", len(record_ppgs))
+    # return record_ppgs, record_ecgs, record_names
 
 
 def split_segments_and_save(total_data: Dict[str, Any], save_prefix: str, ratios: Tuple[float, float]):

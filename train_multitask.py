@@ -83,7 +83,7 @@ class PearsonCorrelationLoss(torch.nn.Module):
 
 def train_epoch_combined(
     model_clip, model_converter, dataloader, optimizer, 
-    contrast_loss_fn, combined_loss_fn, pearson_loss_fn, # Thêm tham số loss function
+    contrast_loss_fn, mse_loss_fn, pearson_loss_fn, # Thêm tham số loss function
     device, scaler,
     loss_weight_contrastive=1.0, loss_weight_mse=1.0, loss_weight_pearson=0.5 # Thêm tham số trọng số
 ):
@@ -114,8 +114,8 @@ def train_epoch_combined(
             predicted_ecg = model_converter(ppg_embedding, feature_lists_PPG) 
             
             # Tính MSE Loss
-            m_loss = combined_loss_fn(predicted_ecg, ecg_target)
-            
+            m_loss = mse_loss_fn(predicted_ecg, ecg_target)
+
             # Tính Pearson Loss
             p_loss = pearson_loss_fn(predicted_ecg, ecg_target)
 
@@ -174,7 +174,8 @@ if __name__ == "__main__":
 
     # --- KHỞI TẠO LOSS FUNCTIONS ---
     contrast_loss = FastSoftCLIPLoss(teacher_temp=0.05, student_temp=0.07).to(device)
-    combined_loss = CombinedLoss(alpha=1.0, beta=1.0).to(device)
+    # combined_loss = CombinedLoss(alpha=1.0, beta=1.0).to(device)
+    mse_loss = torch.nn.MSELoss().to(device)
     pearson_loss = PearsonCorrelationLoss().to(device)
     # Optimizer
     params_to_optimize = list(model_clip.parameters()) + list(model_converter.parameters())
@@ -198,7 +199,7 @@ if __name__ == "__main__":
         
         train_loss, train_contrast, train_mse, train_pearson = train_epoch_combined(
             model_clip, model_converter, train_loader, optimizer, 
-            contrast_loss, combined_loss, pearson_loss, # Truyền loss function mới
+            contrast_loss, mse_loss, pearson_loss, # Truyền loss function mới
             device, scaler,
             loss_weight_contrastive=WEIGHT_CONTRASTIVE, 
             loss_weight_mse=WEIGHT_L1,

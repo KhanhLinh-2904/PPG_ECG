@@ -8,6 +8,8 @@ import random
 import os
 from scipy import signal
 
+from metric import calculate_metrics
+
 # --- CONFIGURATION ---
 SEED = 40
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -124,7 +126,7 @@ def check_phase_shift(ecg_true, ecg_pred, fs=100, record_name="Unknown"):
     plt.tight_layout()
     plt.show()
 
-def check_phase_shift_and_error(ecg_true, ecg_pred, fs=100, record_name="Unknown"):
+def check_phase_shift_and_error(ecg_true, ecg_pred, fs=125, record_name="Unknown"):
     """
     Tính toán độ lệch pha, sửa tín hiệu và hiển thị Error Signal sau khi sửa.
     """
@@ -132,9 +134,8 @@ def check_phase_shift_and_error(ecg_true, ecg_pred, fs=100, record_name="Unknown
     ecg_true = np.array(ecg_true).flatten()
     ecg_pred = np.array(ecg_pred).flatten()
 
-    # 1. Chuẩn hóa tín hiệu (Zero-mean) để tính correlation chính xác
-    true_norm = ecg_true - np.mean(ecg_true)
-    pred_norm = ecg_pred - np.mean(ecg_pred)
+    true_norm = ecg_true 
+    pred_norm = ecg_pred 
     
     # 2. Tính Cross-Correlation
     correlation = signal.correlate(true_norm, pred_norm, mode='full')
@@ -147,32 +148,38 @@ def check_phase_shift_and_error(ecg_true, ecg_pred, fs=100, record_name="Unknown
     
     # 4. Tạo tín hiệu đã sửa pha (Corrected Prediction)
     # Logic: Giữ nguyên True, dịch chuyển Pred để khớp True
+    
     if lag_samples > 0:
-        # Pred đang đi SỚM (bên trái) so với True -> Cần đẩy sang PHẢI (thêm đệm vào đầu)
-        # Pad (trước, sau) -> Pad (lag, 0)
+        # Pred đang đi SỚM (bên trái) -> Cần dịch sang PHẢI (chèn 0 vào đầu)
         ecg_pred_corrected = np.pad(ecg_pred, (lag_samples, 0), 'constant')[:len(ecg_true)]
-        shift_msg = f"ECG prediction lags before ECG Groundtruth. Needs a left shift of {abs_lag} samples."
+        shift_msg = f"ECG prediction leads (early). Needs a right shift of {lag_samples} samples."
+        
     elif lag_samples < 0:
-        # Pred đang đi TRỄ (bên phải) so với True -> Cần kéo sang TRÁI (cắt bớt đầu)
-        abs_lag = abs(lag_samples)
-        # Pad (0, lag) để giữ độ dài rồi cắt đầu
+        # Pred đang đi TRỄ (bên phải) -> Cần dịch sang TRÁI (cắt bớt đầu)
+        
+        # --- SỬA LỖI Ở ĐÂY: Tính abs_lag TRƯỚC khi dùng trong f-string ---
+        abs_lag = abs(lag_samples) 
+        # -----------------------------------------------------------------
+
         ecg_pred_corrected = np.pad(ecg_pred, (0, abs_lag), 'constant')[abs_lag:]
-        shift_msg = f"ECG prediction lags behind ECG Groundtruth. Needs a left shift of {abs_lag} samples."
+        shift_msg = f"ECG prediction lags (late). Needs a left shift of {abs_lag} samples."
+        
     else:
+        # Không lệch
         ecg_pred_corrected = ecg_pred
-        shift_msg = "2 signals are synchronized."
+        shift_msg = "Perfectly synchronized (No phase shift)."
 
     # 5. Tính toán Error Signal
     error_before = ecg_true - ecg_pred
-    error_after = ecg_true - ecg_pred_corrected # Đây là cái bạn cần
+    error_after = ecg_true - ecg_pred_corrected 
 
     # --- IN KẾT QUẢ ---
-    print(f"\n--- Phân tích Pha & Sai số: {record_name} ---")
+    print(f"\n--- Phase Shift Analysis: {record_name} ---")
     print(f"Lag (Samples): {lag_samples}")
     print(f"Time Shift   : {time_shift:.4f}s")
-    print(f"HƯỚNG DẪN    : {shift_msg}")
-    print(f"Mean Abs Error (Trước sửa): {np.mean(np.abs(error_before)):.4f}")
-    print(f"Mean Abs Error (Sau sửa)  : {np.mean(np.abs(error_after)):.4f}")
+    print(f"Correction   : {shift_msg}")
+    print(f"MAE (Before) : {np.mean(np.abs(error_before)):.4f}")
+    print(f"MAE (After)  : {np.mean(np.abs(error_after)):.4f}")
 
     # --- VẼ BIỂU ĐỒ ---
     plt.figure(figsize=(12, 10))
@@ -180,30 +187,27 @@ def check_phase_shift_and_error(ecg_true, ecg_pred, fs=100, record_name="Unknown
 
     # Plot 1: Gốc (Chưa sửa)
     plt.subplot(3, 1, 1)
-    plt.plot(t, ecg_true, 'k', label='ECG Ground Truth', linewidth=1.5, alpha=0.7)
-    plt.plot(t, ecg_pred, 'r--', label='ECG Prediction', linewidth=1.5)
-    plt.title(f"1. Original signal (Not Shifted) - {shift_msg}")
+    plt.plot(t, ecg_true, 'k', label='Ground Truth', linewidth=1.5, alpha=0.7)
+    plt.plot(t, ecg_pred, 'r--', label='Original Pred', linewidth=1.5)
+    plt.title(f"1. Original Signals (Lag: {lag_samples})")
     plt.legend(loc='upper right')
     plt.grid(True, alpha=0.3)
 
     # Plot 2: Đã sửa (Đồng bộ)
     plt.subplot(3, 1, 2)
-    plt.plot(t, ecg_true, 'k', label='ECG Ground Truth', linewidth=1.5, alpha=0.7)
-    plt.plot(t, ecg_pred_corrected, 'g--', label='Shifted ECG Prediction', linewidth=1.5)
-    plt.title("2. After shifting signal (Shifted)")
+    plt.plot(t, ecg_true, 'k', label='Ground Truth', linewidth=1.5, alpha=0.7)
+    plt.plot(t, ecg_pred_corrected, 'g--', label='Corrected Pred', linewidth=1.5)
+    plt.title(f"2. Phase Corrected Signals ({shift_msg})")
     plt.legend(loc='upper right')
     plt.grid(True, alpha=0.3)
 
-    # Plot 3: Error Signal (So sánh Trước và Sau)
+    # Plot 3: Error Signal
     plt.subplot(3, 1, 3)
-    # Vẽ Error cũ mờ đi để làm nền
     plt.plot(t, error_before, color='gray', alpha=0.3, label='Error Before Shift')
-    # Vẽ Error mới đậm lên
     plt.plot(t, error_after, color='purple', label='Error After Shift')
     plt.fill_between(t, error_after, color='purple', alpha=0.2)
-    
-    plt.title("3. Error Signal: Before vs After Shift")
-    plt.ylabel("Difference (True - Pred)")
+    plt.title("3. Error Signal Comparison")
+    plt.ylabel("Difference")
     plt.xlabel("Samples")
     plt.legend(loc='upper right')
     plt.grid(True, alpha=0.3)
@@ -310,12 +314,12 @@ def visualize_results(ppg, ecg_true, ecg_pred, sample_idx, record_name):
     # plt.tight_layout(rect=[0, 0.03, 1, 0.95])
     # plt.show()
 
-def run_test():
+def run_visualization():
     g = torch.Generator()
     g.manual_seed(SEED)
     # Load Models
     model_clip, model_converter = load_models()
-
+    
     # Load Data
     try:
         test_dataset = LoadData(TEST_DATA_PATH)
@@ -350,7 +354,6 @@ def run_test():
             ppg_np = ppg_input.cpu().squeeze().numpy()
             ecg_true_np = ecg_target.cpu().squeeze().numpy()
             ecg_pred_np = predicted_ecg.cpu().squeeze().numpy()
-
             current_batch_size = ppg_np.shape[0]
             for idx in range(current_batch_size):
                 # Lấy tên record tương ứng
@@ -378,6 +381,59 @@ def run_test():
                         print("Done plotting 4 unique records.")
                         return
 
+
+def run_loss():
+    g = torch.Generator()
+    g.manual_seed(SEED)
+    # Load Models
+    total_rmse = 0.0 
+    total_pearson = 0.0
+    total_samples = 0
+    model_clip, model_converter = load_models()
+    
+    # Load Data
+    try:
+        test_dataset = LoadData(TEST_DATA_PATH)
+        test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=True)
+        print(f"Loaded dataset from {TEST_DATA_PATH}")
+    except Exception as e:
+        print(f"Error loading data: {e}")
+        return
+
+
+    # Inference Loop
+    print("Running...")
+    with torch.no_grad():
+        for i, (ecg, ppg, labels, groupID, record_names) in enumerate(test_loader):
+            # Move to device and add channel dim
+            ecg_target = ecg.to(DEVICE).float().unsqueeze(1)
+            ppg_input = ppg.to(DEVICE).float().unsqueeze(1)
+
+            # --- Forward Pass ---
+            # 1. Get embedding from CLIP (we ignore logits here)
+            _, ppg_embedding, feature_lists_PPG = model_clip(ecg_target, ppg_input)
+
+            # 2. Decode embedding to ECG using Converter
+            predicted_ecg = model_converter(ppg_embedding, feature_lists_PPG)
+
+            # --- Visualization ---
+            # Convert to CPU numpy for plotting
+            ppg_np = ppg_input.cpu().squeeze().numpy()
+            ecg_true_np = ecg_target.cpu().squeeze().numpy()
+            ecg_pred_np = predicted_ecg.cpu().squeeze().numpy()
+            current_batch_size = ecg_target.size(0)
+            rmse , pearson = calculate_metrics(ecg_true_np, ecg_pred_np)
+            total_rmse += rmse * current_batch_size
+            total_pearson += pearson * current_batch_size
+            total_samples += current_batch_size
+            # print("shape: ", current_batch_size)
+            # print(f"Record name {record_names}")
+            # print(f"Batch {i+1} : RMSE = {rmse:.4f}, Pearson = {pearson:.4f}")
+    avg_rmse = total_rmse / total_samples
+    avg_pearson = total_pearson / total_samples
+    print(f"Average : RMSE = {avg_rmse:.4f}, Pearson = {avg_pearson:.4f}")
+    return
 if __name__ == "__main__":
     set_seed(SEED)
-    run_test()
+    # run_visualization()
+    run_loss()
