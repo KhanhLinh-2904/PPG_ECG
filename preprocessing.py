@@ -98,21 +98,20 @@ class SignalProcessor:
         cleaned_signal = np.where(spike_locations, smoothed_signal, signal)
         return cleaned_signal
     
-    # def normalize_signal(self, signal_data: np.ndarray) -> np.ndarray:
-    #     min_val = np.min(signal_data)
-    #     max_val = np.max(signal_data)
-    #     if max_val - min_val < 1e-8:
-    #         return np.zeros_like(signal_data)
-    #     return (signal_data - min_val) / (max_val - min_val)
-    
-    
     def normalize_signal(self, signal_data: np.ndarray) -> np.ndarray:
-        mean_val = np.mean(signal_data)
-        std_val = np.std(signal_data)
-        if std_val < 1e-8:
+        min_val = np.min(signal_data)
+        max_val = np.max(signal_data)
+        if max_val - min_val < 1e-8:
             return np.zeros_like(signal_data)
-            
-        return (signal_data - mean_val) / std_val
+        return (signal_data - min_val) / (max_val - min_val)
+
+
+    # def normalize_signal(self, signal_data: np.ndarray) -> np.ndarray:
+    #     mean_val = np.mean(signal_data)
+    #     std_val = np.std(signal_data)
+    #     if std_val < 1e-8:
+    #         return np.zeros_like(signal_data)
+    #     return (signal_data - mean_val) / std_val
     
     def align_signals_cross_correlation(self, ecg: np.ndarray, ppg: np.ndarray) -> Tuple[np.ndarray, int]:
         correlation = signal.correlate(ecg, ppg, mode="full")
@@ -123,10 +122,10 @@ class SignalProcessor:
 
     def preprocessing_PPG(self, ppg_signal: np.ndarray) -> np.ndarray:
         time = np.arange(len(ppg_signal)) / self.fs
-        ppg_bpf = self._butter_lowpass(ppg_signal, cutoff=10, order=5)
-        ppg_ac = self._dc_removal(time, ppg_bpf)
-        ppg_remove_spikes =  self.remove_large_spikes_auto(ppg_ac, sigma_factor=1)
-        ppg_normalized = self.normalize_signal(ppg_remove_spikes)
+        # ppg_bpf = self._butter_lowpass(ppg_signal, cutoff=10, order=5)
+        ppg_ac = self._dc_removal(time, ppg_signal)
+        # ppg_remove_spikes =  self.remove_large_spikes_auto(ppg_ac, sigma_factor=1)
+        ppg_normalized = self.normalize_signal(ppg_ac)
         return ppg_normalized
 
     def preprocessing_ECG(self, ecg_signal: np.ndarray) -> np.ndarray:
@@ -342,7 +341,7 @@ def group_ecg_segment(record: Dict[str, List[Any]], threshold: float = 0.7) -> D
             results["groupIDs"].append(group_id)
             results["ecgs"].append(ecg_segments[idx])
             results["ppgs"].append(ppg_segments[idx])
-            results["labels"].append(0)
+            results["labels"].append(input_labels[idx])
             results["records"].append(record_names[idx])
     return results
 
@@ -386,46 +385,129 @@ def load_and_slice_all_signals(datapath: str, record_list: List[str]):
         ppg_preprocessed = processor.align_signals_cross_correlation(ecg_preprocessed, ppg_preprocessed)[0]
         # visualizer.visualize_sliding_record(record_name, ppg_preprocessed, ecg_preprocessed)
         # visualizer.visualize_sliding_record(record_name, ppg_preprocessed, ppg)
-        visualizer.visualize_specific_segment(record_name, ppg_preprocessed[:samples_to_plot], ecg_preprocessed[:samples_to_plot])
+        # visualizer.visualize_specific_segment(record_name, ppg_preprocessed[:samples_to_plot], ecg_preprocessed[:samples_to_plot])
 
 
 
-    #     min_len = min(len(ppg_preprocessed), len(ecg_preprocessed))
-    #     print("Min length of signals: ", min_len)
-    #     if min_len < SLICE_LENGTH:
-    #         continue
-    #     start_idx = 0
-    #     prev_ppg = 0
-    #     prev_ecg = 0
-    #     while start_idx + SLICE_LENGTH <= min_len:
+        min_len = min(len(ppg_preprocessed), len(ecg_preprocessed))
+        print("Min length of signals: ", min_len)
+        if min_len < SLICE_LENGTH:
+            continue
+        start_idx = 0
+        prev_ppg = 0
+        prev_ecg = 0
+        while start_idx + SLICE_LENGTH <= min_len:
            
-    #         ppg_slice = ppg_preprocessed[start_idx:start_idx + SLICE_LENGTH]
-    #         ecg_slice = ecg_preprocessed[start_idx:start_idx + SLICE_LENGTH]
-    #         if start_idx == 0:
-    #             prev_ppg = ppg_slice
-    #             prev_ecg = ecg_slice
-    #         else:
-    #             prev_ppg = record_ppgs[-1]
-    #             prev_ecg = record_ecgs[-1]
-    #         ppg_corr = get_max_cross_correlation_score(prev_ppg, ppg_slice)    
-    #         ecg_corr = get_max_cross_correlation_score(prev_ecg, ecg_slice)  
-    #         print("-----------------------")
-    #         print("ppg_corr: ", ppg_corr)  
-    #         print("ecg_corr: ", ecg_corr)  
-    #         print("-----------------------")
+            ppg_slice = ppg_preprocessed[start_idx:start_idx + SLICE_LENGTH]
+            ecg_slice = ecg_preprocessed[start_idx:start_idx + SLICE_LENGTH]
+            if start_idx == 0:
+                prev_ppg = ppg_slice
+                prev_ecg = ecg_slice
+            else:
+                prev_ppg = record_ppgs[-1]
+                prev_ecg = record_ecgs[-1]
+            ppg_corr = get_max_cross_correlation_score(prev_ppg, ppg_slice)    
+            ecg_corr = get_max_cross_correlation_score(prev_ecg, ecg_slice)  
+            print("-----------------------")
+            print("ppg_corr: ", ppg_corr)  
+            print("ecg_corr: ", ecg_corr)  
+            print("-----------------------")
 
-    #         # or ppg_corr <= 0.7 or ecg_corr <= 0.3
-    #         if np.isnan(ppg_slice).any() or np.isnan(ecg_slice).any():
-    #             start_idx += OVERLAP
-    #             continue
+            # or ppg_corr <= 0.7 or ecg_corr <= 0.3
+            if np.isnan(ppg_slice).any() or np.isnan(ecg_slice).any():
+                start_idx += OVERLAP
+                continue
 
-    #         record_ppgs.append(ppg_slice)
-    #         record_ecgs.append(ecg_slice)
-    #         record_names.append(record_name)
-    #         start_idx += OVERLAP
-    # print("Tổng số segments PPG sau khi cắt: ", len(record_ppgs))
-    # return record_ppgs, record_ecgs, record_names
+            record_ppgs.append(ppg_slice)
+            record_ecgs.append(ecg_slice)
+            record_names.append(record_name)
+            start_idx += OVERLAP
+    print("Tổng số segments PPG sau khi cắt: ", len(record_ppgs))
+    return record_ppgs, record_ecgs, record_names
 
+def split_segments_and_save_by_record(total_data: Dict[str, Any], save_prefix: str, ratios: Tuple[float, float]):
+    os.makedirs("datasets", exist_ok=True)
+    
+    # 1. Tiền xử lý gom nhóm (giữ nguyên logic của bạn)
+    total_data = group_ecg_segment(total_data, threshold=0.9) 
+    
+    # Lấy danh sách records và groupIDs từ total_data
+    all_records = np.array(total_data["records"])
+    all_group_ids = np.array(total_data["groupIDs"])
+
+    # 2. Xác định danh sách các Record duy nhất
+    unique_records = np.unique(all_records)
+    n_records = len(unique_records)
+    
+    print(f"\n--- THỐNG KÊ TỔNG QUÁT ---")
+    print(f"Tổng số lượng Records gốc: {n_records}")
+
+    # 3. Shuffle danh sách RECORD (không phải groupID) để chia train/test
+    np.random.shuffle(unique_records)
+    
+    # 4. Tính toán chia theo tỷ lệ records (ví dụ 80:20)
+    n_train_records = int(ratios[0] * n_records)
+    # Đảm bảo có ít nhất 1 record cho test nếu n_records nhỏ
+    if n_train_records == n_records and n_records > 1:
+        n_train_records -= 1
+        
+    train_record_names = unique_records[:n_train_records]
+    test_record_names = unique_records[n_train_records:]
+
+    # 5. Map ngược từ Record Name về Segment Index
+    # Tìm tất cả index mà record thuộc về danh sách train_record_names
+    train_indices = np.where(np.isin(all_records, train_record_names))[0].tolist()
+    test_indices = np.where(np.isin(all_records, test_record_names))[0].tolist()
+    
+    # 6. Thống kê chi tiết dựa trên Group ID trong mỗi tập để bạn theo dõi
+    def get_group_stats(indices):
+        groups_in_split = all_group_ids[indices]
+        u_ids, counts = np.unique(groups_in_split, return_counts=True)
+        n_singles = np.sum(counts == 1)
+        n_clusters = len(u_ids) - n_singles
+        return len(u_ids), n_clusters, n_singles
+
+    n_groups_train, n_clusters_train, n_singles_train = get_group_stats(train_indices)
+    n_groups_test, n_clusters_test, n_singles_test = get_group_stats(test_indices)
+
+    print(f"\n--- CHI TIẾT PHÂN BỐ (Theo Record) ---")
+    print(f"TRAIN Set: {len(train_record_names)} records")
+    print(f"  └─ Tổng {n_groups_train} groups ({n_clusters_train} Clusters, {n_singles_train} Singles)")
+    
+    print(f"TEST Set: {len(test_record_names)} records")
+    print(f"  └─ Tổng {n_groups_test} groups ({n_clusters_test} Clusters, {n_singles_test} Singles)")
+
+    # 7. Shuffle lại index trong từng tập để tăng tính ngẫu nhiên khi train
+    random.shuffle(train_indices)
+    random.shuffle(test_indices)
+
+    print(f"\n--- KẾT QUẢ SỐ LƯỢNG SEGMENTS ---")
+    print(f"Train: {len(train_indices)} segments")
+    print(f"Test:  {len(test_indices)} segments")
+
+    splits = {
+        "train": train_indices,
+        "test": test_indices
+    }
+    
+    # 8. Lưu file
+    for split_name, current_indices in splits.items():
+        save_path = f"datasets/{save_prefix}_{split_name}.npz"
+        
+        if not current_indices:
+            print(f"⚠️ Tập {split_name} rỗng!")
+            continue
+
+        save_dict = {
+            "ecgs": [total_data["ecgs"][i] for i in current_indices],
+            "ppgs": [total_data["ppgs"][i] for i in current_indices],
+            "groupIDs": [total_data["groupIDs"][i] for i in current_indices],
+            "labels": [total_data["labels"][i] for i in current_indices],
+            "records": [total_data["records"][i] for i in current_indices]
+        }
+
+        np.savez(save_path, **save_dict)
+        print(f"→ Đã lưu {split_name.upper()}: {len(current_indices)} mẫu tại '{save_path}'")
 
 def split_segments_and_save(total_data: Dict[str, Any], save_prefix: str, ratios: Tuple[float, float]):
   
@@ -521,35 +603,35 @@ def split_segments_and_save(total_data: Dict[str, Any], save_prefix: str, ratios
 
 if __name__ == "__main__":
     set_seed(SEED)
-    datapath = "/home/linhhima/Pre_processing_data/Datasets/mimic_perform_non_af_wfdb" 
-    # datapath = "/home/linhhima/Pre_processing_data/Datasets/mimic_perform_af_wfdb"
+    datapath_non_af = "/home/linhhima/Pre_processing_data/Datasets/mimic_perform_non_af_wfdb" 
+    datapath_af = "/home/linhhima/Pre_processing_data/Datasets/mimic_perform_af_wfdb"
     # all_records = get_all_records(datapath)
    
     # records_sample = ['mimic_perform_non_af_001', 'mimic_perform_non_af_002', 'mimic_perform_non_af_003', 
     #                   'mimic_perform_non_af_007', 'mimic_perform_non_af_009', 'mimic_perform_non_af_015',
     #                   'mimic_perform_non_af_005', 'mimic_perform_non_af_013', 'mimic_perform_non_af_016']
     # records_sample = ['mimic_perform_non_af_002']
-    records_sample = ['mimic_perform_non_af_001', 'mimic_perform_non_af_002', 'mimic_perform_non_af_013', 'mimic_perform_non_af_016']
-    # records_sample = ['mimic_perform_non_af_001', 'mimic_perform_non_af_002',
-    #                 'mimic_perform_non_af_003', 'mimic_perform_non_af_004',
-    #                 'mimic_perform_non_af_005', 'mimic_perform_non_af_006',
-    #                 'mimic_perform_non_af_007', 'mimic_perform_non_af_008',
-    #                 'mimic_perform_non_af_009', 'mimic_perform_non_af_010',
-    #                 'mimic_perform_non_af_011', 'mimic_perform_non_af_012',
-    #                 'mimic_perform_non_af_013', 'mimic_perform_non_af_014',
-    #                 'mimic_perform_non_af_015', 'mimic_perform_non_af_016']
-    
-    # records_sample = ['mimic_perform_af_001', 'mimic_perform_af_002',
-    #                 'mimic_perform_af_003', 'mimic_perform_af_004',
-    #                 'mimic_perform_af_005', 'mimic_perform_af_006',
-    #                 'mimic_perform_af_007', 'mimic_perform_af_008',
-    #                 'mimic_perform_af_009', 'mimic_perform_af_010',
-    #                 'mimic_perform_af_011', 'mimic_perform_af_012',
-    #                 'mimic_perform_af_013', 'mimic_perform_af_014',
-    #                 'mimic_perform_af_015', 'mimic_perform_af_016',
-    #                 'mimic_perform_af_017', 'mimic_perform_af_018',
-    #                 'mimic_perform_af_019'
-    #                 ]
+    # records_sample = ['mimic_perform_non_af_001', 'mimic_perform_non_af_002', 'mimic_perform_non_af_013', 'mimic_perform_non_af_016']
+    records_sample_non_af = ['mimic_perform_non_af_001', 'mimic_perform_non_af_002',
+                    'mimic_perform_non_af_003', 
+                    'mimic_perform_non_af_005',
+                    'mimic_perform_non_af_007', 'mimic_perform_non_af_008',
+                    'mimic_perform_non_af_009', 
+                    'mimic_perform_non_af_011', 
+                    'mimic_perform_non_af_013', 
+                     'mimic_perform_non_af_016']
+
+    records_sample_af = ['mimic_perform_af_001', 
+                    'mimic_perform_af_003', 'mimic_perform_af_004',
+                     'mimic_perform_af_006',
+                    'mimic_perform_af_007', 'mimic_perform_af_008',
+                    'mimic_perform_af_009', 'mimic_perform_af_010',
+                    'mimic_perform_af_011', 'mimic_perform_af_012',
+                    'mimic_perform_af_013',
+                    'mimic_perform_af_015', 'mimic_perform_af_016',
+                    'mimic_perform_af_017', 'mimic_perform_af_018',
+                    'mimic_perform_af_019'
+                    ]
     # records_sample = ['mimic_perform_af_001', 'mimic_perform_af_002',
     #                 'mimic_perform_af_003', 'mimic_perform_af_004',
     #                 'mimic_perform_af_010',
@@ -559,12 +641,33 @@ if __name__ == "__main__":
     #                  'mimic_perform_af_018',
     #                 'mimic_perform_af_019'
     #                 ]
-    non_af_data_ppg, non_af_data_ecg, record_names = load_and_slice_all_signals(datapath, records_sample)
-    print("Tổng số segments PPG thu được: ", len(non_af_data_ppg))
+    non_af_data_ppg, non_af_data_ecg, non_af_records = load_and_slice_all_signals(datapath_non_af, records_sample_non_af)
+    af_data_ppg, af_data_ecg, af_records = load_and_slice_all_signals(datapath_af, records_sample_af)
+
+    non_af_labels = [0] * len(non_af_data_ppg)
+    af_labels = [1] * len(af_data_ppg)
+
+    # 3. Hợp nhất dữ liệu (Concatenation)
+    # Sử dụng dấu + để nối các list lại với nhau
+    all_ppgs = non_af_data_ppg + af_data_ppg
+    all_ecgs = non_af_data_ecg + af_data_ecg
+    all_records = non_af_records + af_records
+    all_labels = non_af_labels + af_labels
+
+    # 4. Lưu vào cấu trúc total_data
     total_data = {
-    "ppgs": non_af_data_ppg,
-    "ecgs": non_af_data_ecg,
-    "groupIDs": [],          # Sẽ được điền bởi group_ecg_segment
-    "records": record_names, # Danh sách tên record tương ứng
-    }   
-    split_segments_and_save(total_data, save_prefix="normal", ratios=(0.8, 0.2))
+        "ppgs": all_ppgs,
+        "ecgs": all_ecgs,
+        "labels": all_labels,    # Nhãn 0 và 1 đã được hợp nhất
+        "records": all_records,
+        "groupIDs": [],          # Sẽ được điền bởi hàm group_ecg_segment sau
+    }
+
+    print(f"Tổng số segments Non-AF: {len(non_af_data_ppg)}")
+    print(f"Tổng số segments AF: {len(af_data_ppg)}")
+    print(f"Tổng cộng dữ liệu sau hợp nhất: {len(total_data['ppgs'])}")
+    # split_segments_and_save(total_data, save_prefix="normal_remove24", ratios=(0.8, 0.2))
+    # split_segments_and_save_by_record(total_data, save_prefix="record", ratios=(0.8, 0.2))
+    # split_segments_and_save(total_data, save_prefix="total_min_max", ratios=(0.8, 0.2))
+    split_segments_and_save_by_record(total_data, save_prefix="total_record_mm", ratios=(0.8, 0.2))
+

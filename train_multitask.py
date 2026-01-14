@@ -20,8 +20,8 @@ NUM_EPOCHS = 200
 LEARNING_RATE = 1e-4
 BATCH_SIZE = 64
 WEIGHT_CONTRASTIVE = 0.1
-WEIGHT_L1 = 1.0       # Thực tế là MSE weight trong code của bạn
-WEIGHT_PEARSON = 0.5  # Trọng số cho Pearson Loss (thường < 1 để cân bằng)
+WEIGHT_L1 = 1.0      
+WEIGHT_PEARSON = 0.5  
 OUTPUT_EMBED_DIM = 128
 
 def set_seed(seed):
@@ -117,15 +117,15 @@ def train_epoch_combined(
             m_loss = mse_loss_fn(predicted_ecg, ecg_target)
 
             # Tính Pearson Loss
-            p_loss = pearson_loss_fn(predicted_ecg, ecg_target)
+            # p_loss = pearson_loss_fn(predicted_ecg, ecg_target)
 
             # --- 3. Tổng Loss (Weighted Sum) ---
             weighted_c_loss = loss_weight_contrastive * c_loss
             weighted_m_loss = loss_weight_mse * m_loss
-            weighted_p_loss = loss_weight_pearson * p_loss
+            # weighted_p_loss = loss_weight_pearson * p_loss
             
-            # total_loss = weighted_c_loss + weighted_m_loss 
-            total_loss = weighted_c_loss + weighted_m_loss + weighted_p_loss
+            total_loss = weighted_c_loss + weighted_m_loss 
+            # total_loss = weighted_c_loss + weighted_m_loss + weighted_p_loss
 
 
         
@@ -138,14 +138,14 @@ def train_epoch_combined(
         total_loss_all += total_loss.item()
         total_loss_contrast += weighted_c_loss.item()
         total_loss_mse += weighted_m_loss.item()
-        total_loss_pearson += weighted_p_loss.item()
+        # total_loss_pearson += weighted_p_loss.item()
         
         # Hiển thị loss realtime trên progress bar
         progress_bar.set_postfix({
             'Total': f"{total_loss.item():.4f}", 
             'Con': f"{weighted_c_loss.item():.4f}",
             'MSE': f"{weighted_m_loss.item():.4f}",
-            'Pears': f"{weighted_p_loss.item():.4f}"
+            # 'Pears': f"{weighted_p_loss.item():.4f}"
         })
 
     torch.cuda.empty_cache()
@@ -154,9 +154,9 @@ def train_epoch_combined(
     avg_loss_all = total_loss_all / len(dataloader)
     avg_loss_contrast = total_loss_contrast / len(dataloader)
     avg_loss_mse = total_loss_mse / len(dataloader)
-    avg_loss_pearson = total_loss_pearson / len(dataloader)
-    
-    return avg_loss_all, avg_loss_contrast, avg_loss_mse, avg_loss_pearson
+    # avg_loss_pearson = total_loss_pearson / len(dataloader)
+    return avg_loss_all, avg_loss_contrast, avg_loss_mse
+    # return avg_loss_all, avg_loss_contrast, avg_loss_mse, avg_loss_pearson
 
 if __name__ == "__main__":
     set_seed(SEED)
@@ -165,7 +165,7 @@ if __name__ == "__main__":
 
     print("Loading training dataset...")
     # Cập nhật đường dẫn dataset của bạn nếu cần
-    train_dataset = LoadData('datasets/normal_train.npz') 
+    train_dataset = LoadData('datasets/total_record_mm_train.npz') 
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True)
 
     # Khởi tạo mô hình
@@ -190,14 +190,14 @@ if __name__ == "__main__":
         'Total Loss': [],
         'Contrastive Loss': [],
         'MSE Loss': [],
-        'Pearson Loss': []
+        # 'Pearson Loss': []
     }
 
     # --- VÒNG LẶP TRAINING ---
     for epoch in range(1, NUM_EPOCHS + 1):
         start = time.time()
         
-        train_loss, train_contrast, train_mse, train_pearson = train_epoch_combined(
+        train_loss, train_contrast, train_mse = train_epoch_combined(
             model_clip, model_converter, train_loader, optimizer, 
             contrast_loss, mse_loss, pearson_loss, # Truyền loss function mới
             device, scaler,
@@ -210,10 +210,10 @@ if __name__ == "__main__":
         history['Total Loss'].append(train_loss)
         history['Contrastive Loss'].append(train_contrast)
         history['MSE Loss'].append(train_mse)
-        history['Pearson Loss'].append(train_pearson)
+        # history['Pearson Loss'].append(train_pearson)
 
         print(f"\nEpoch {epoch}/{NUM_EPOCHS}")
-        print(f"  [Train] Total: {train_loss:.5f} | Con: {train_contrast:.5f} | MSE: {train_mse:.5f} | Pearson: {train_pearson:.5f}")
+        # print(f"  [Train] Total: {train_loss:.5f} | Con: {train_contrast:.5f} | MSE: {train_mse:.5f} | Pearson: {train_pearson:.5f}")
 
         # Lưu model tốt nhất
         if train_loss < best_loss:

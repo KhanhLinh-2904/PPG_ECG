@@ -90,14 +90,16 @@ def visualize_ppg_pipeline(raw_ppg, fs, title="Optimized Pipeline"):
     
     # --- 1: LOWPASS FILTER  ---
     ppg_lowpass = _butter_lowpass(raw_ppg, cutoff=10, order=5)
-    
+    diff = ppg_lowpass - raw_ppg
+    print(f"Diff after lowpass: {np.sum(np.abs(diff))}")
     # --- 2: DC REMOVAL  ---
     dc_component = _dc_component(time, ppg_lowpass)
     ppg_ac = ppg_lowpass - dc_component
     
     # --- 3: SPIKE REMOVAL  ---
     ppg_clean_ac = remove_large_spikes_auto(ppg_ac, sigma_factor=1)
-    
+    diff = ppg_clean_ac - ppg_ac
+    print(f"Diff after spike removal: {np.sum(np.abs(diff))}")
     # --- 4: NORMALIZE  ---
     ppg_final = normalize_signal(ppg_clean_ac)
     
@@ -663,13 +665,13 @@ if __name__ == "__main__":
             
         ppg = signal_data[:, 0]
         samples_to_plot = 10 * fs 
-        # visualize_ppg_pipeline(ppg[:samples_to_plot], fs, title=record_name)
+        visualize_ppg_pipeline(ppg[:samples_to_plot], fs, title=record_name)
         # visualize_fft_process(ppg[:samples_to_plot], fs, title=record_name)
         # visualize_dc(ppg[:samples_to_plot], fs, title=record_name)
         # visualize_spike_removal_step(ppg[:samples_to_plot], fs, title=record_name)
         # survey_sigma_factors(ppg[:samples_to_plot], fs, title=record_name)
         # interactive_sigma_tuner(ppg[:samples_to_plot], fs, title=record_name)
-        optimize_sigma_with_kurtosis(ppg[:samples_to_plot], fs, title=record_name)
+        # optimize_sigma_with_kurtosis(ppg[:samples_to_plot], fs, title=record_name)
 
 
         

@@ -8,7 +8,7 @@ import random
 import os
 from scipy import signal
 
-from metric import calculate_metrics
+from metric import calculate_cosine_similarity, calculate_dtw_distance, calculate_metrics, calculate_prd, calculate_ssim_1d
 
 # --- CONFIGURATION ---
 SEED = 40
@@ -16,10 +16,10 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 BATCH_SIZE = 16 # Small batch for testing
 INPUT_LENGTH = 2400
 OUTPUT_EMBED_DIM = 128
-TEST_DATA_PATH = 'datasets/normal_test.npz' # Change to normal_train.npz if val doesn't exist yet
-CLIP_MODEL_PATH = "multitask_clip_best_model.pth"
-DECODER_MODEL_PATH = "multitask_decoder_best_model.pth"
-NUM_SAMPLES_TO_PLOT = 4 
+TEST_DATA_PATH = 'datasets/total_record_z_test.npz' # Change to normal_train.npz if val doesn't exist yet
+CLIP_MODEL_PATH = "multitask_clip_best_model_total_record_z.pth"
+DECODER_MODEL_PATH = "multitask_decoder_best_model_total_record_z.pth"
+NUM_SAMPLES_TO_PLOT = 10
 
 def set_seed(seed):
     random.seed(seed)
@@ -226,7 +226,7 @@ def visualize_results(ppg, ecg_true, ecg_pred, sample_idx, record_name):
     # print("ecg_true: ", ecg_true)
     # print("ecg_pred: ", ecg_pred)
     # print("error_signal: ", error_signal)
-    check_phase_shift_and_error(ecg_true, ecg_pred, fs=125, record_name=record_name)
+    # check_phase_shift_and_error(ecg_true, ecg_pred, fs=125, record_name=record_name)
     
     #################################################################################
     # t = np.arange(len(ppg))
@@ -332,7 +332,7 @@ def run_visualization():
 
     seen_records = set()
     samples_collected = 0
-    TARGET_SAMPLES = 4
+    TARGET_SAMPLES = 10
     print(f"Running inference to find {TARGET_SAMPLES} unique records...")
     # Inference Loop
     print("Running inference...")
@@ -344,7 +344,7 @@ def run_visualization():
 
             # --- Forward Pass ---
             # 1. Get embedding from CLIP (we ignore logits here)
-            _, ppg_embedding, feature_lists_PPG = model_clip(ecg_target, ppg_input)
+            ppg_embedding, feature_lists_PPG = model_clip(None, ppg_input)
 
             # 2. Decode embedding to ECG using Converter
             predicted_ecg = model_converter(ppg_embedding, feature_lists_PPG)
@@ -388,6 +388,10 @@ def run_loss():
     # Load Models
     total_rmse = 0.0 
     total_pearson = 0.0
+    total_prd = 0.0
+    total_ssim = 0.0
+    total_dtw = 0.0
+    total_cosine = 0.0
     total_samples = 0
     model_clip, model_converter = load_models()
     
@@ -411,7 +415,7 @@ def run_loss():
 
             # --- Forward Pass ---
             # 1. Get embedding from CLIP (we ignore logits here)
-            _, ppg_embedding, feature_lists_PPG = model_clip(ecg_target, ppg_input)
+            ppg_embedding, feature_lists_PPG = model_clip(None, ppg_input)
 
             # 2. Decode embedding to ECG using Converter
             predicted_ecg = model_converter(ppg_embedding, feature_lists_PPG)
@@ -422,18 +426,27 @@ def run_loss():
             ecg_true_np = ecg_target.cpu().squeeze().numpy()
             ecg_pred_np = predicted_ecg.cpu().squeeze().numpy()
             current_batch_size = ecg_target.size(0)
-            rmse , pearson = calculate_metrics(ecg_true_np, ecg_pred_np)
-            total_rmse += rmse * current_batch_size
-            total_pearson += pearson * current_batch_size
+            # rmse , pearson = calculate_metrics(ecg_true_np, ecg_pred_np)
+            # total_rmse += rmse * current_batch_size
+            # total_pearson += pearson * current_batch_size
+            # total_prd += calculate_prd(ecg_true_np, ecg_pred_np) * current_batch_size
+            # total_ssim += calculate_ssim_1d(ecg_true_np, ecg_pred_np) * current_batch_size
+            # total_dtw += calculate_dtw_distance(ecg_true_np, ecg_pred_np) * current_batch_size
+            total_cosine += calculate_cosine_similarity(ecg_true_np, ecg_pred_np) * current_batch_size
             total_samples += current_batch_size
             # print("shape: ", current_batch_size)
             # print(f"Record name {record_names}")
             # print(f"Batch {i+1} : RMSE = {rmse:.4f}, Pearson = {pearson:.4f}")
-    avg_rmse = total_rmse / total_samples
-    avg_pearson = total_pearson / total_samples
-    print(f"Average : RMSE = {avg_rmse:.4f}, Pearson = {avg_pearson:.4f}")
+    # avg_rmse = total_rmse / total_samples
+    # avg_pearson = total_pearson / total_samples
+    # avg_prd = total_prd / total_samples
+    # avg_ssim = total_ssim / total_samples
+    # avg_dtw = total_dtw / total_samples
+    avg_cosine = total_cosine / total_samples
+    print(f"Average Cosine Similarity: {avg_cosine:.4f}")
+    # print(f"Average : RMSE = {avg_rmse:.4f}, Pearson = {avg_pearson:.4f}, PRD = {avg_prd:.4f}, SSIM = {avg_ssim:.4f}, DTW = {avg_dtw:.4f}, Cosine = {avg_cosine:.4f}")
     return
 if __name__ == "__main__":
     set_seed(SEED)
-    # run_visualization()
+    run_visualization()
     run_loss()

@@ -26,18 +26,21 @@ class ECGEssembleCLIP(nn.Module):
         self.logit_scale = nn.Parameter(torch.ones([]) * math.log(1 / 0.07))
 
     def forward(self, ecg_original, ppg_original):
+        if ecg_original is None:
+            ecg_predicted_features, featured_PPG, feature_lists_PPG = self.encode_ppg(ppg_original)
+            return  featured_PPG, feature_lists_PPG
+        else:
+            ecg_original_features, featured_ECG, feature_lists_ECG = self.encode_ecg(ecg_original)
+            ecg_predicted_features, featured_PPG, feature_lists_PPG = self.encode_ppg(ppg_original)
+            # print("ecg_original_features shape: ", ecg_original_features.shape)
+            ecg_original_features = ecg_original_features / ecg_original_features.norm(dim=1, keepdim=True)
+            ecg_predicted_features = ecg_predicted_features / ecg_predicted_features.norm(dim=1, keepdim=True)
 
-        ecg_original_features, featured_ECG, feature_lists_ECG = self.encode_ecg(ecg_original)
-        ecg_predicted_features, featured_PPG, feature_lists_PPG = self.encode_ppg(ppg_original)
-        # print("ecg_original_features shape: ", ecg_original_features.shape)
-        ecg_original_features = ecg_original_features / ecg_original_features.norm(dim=1, keepdim=True)
-        ecg_predicted_features = ecg_predicted_features / ecg_predicted_features.norm(dim=1, keepdim=True)
-
-        logit_scale = self.logit_scale.exp()
-       
-        logits_per_original = logit_scale * ecg_original_features @ ecg_predicted_features.t()
+            logit_scale = self.logit_scale.exp()
         
-        return logits_per_original, featured_PPG, feature_lists_PPG
+            logits_per_original = logit_scale * ecg_original_features @ ecg_predicted_features.t()
+            
+            return logits_per_original, featured_PPG, feature_lists_PPG
 
 
 class DecoderBlock_UNet(nn.Module):
