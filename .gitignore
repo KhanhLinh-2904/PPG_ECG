@@ -2,6 +2,7 @@
 *.hea
 *.dat
 *.png
+*.pth
 *.jpg
 *.pt
 saved_models/

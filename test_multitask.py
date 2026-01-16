@@ -16,10 +16,10 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 BATCH_SIZE = 16 # Small batch for testing
 INPUT_LENGTH = 2400
 OUTPUT_EMBED_DIM = 128
-TEST_DATA_PATH = 'datasets/total_record_z_test.npz' # Change to normal_train.npz if val doesn't exist yet
-CLIP_MODEL_PATH = "multitask_clip_best_model_total_record_z.pth"
-DECODER_MODEL_PATH = "multitask_decoder_best_model_total_record_z.pth"
-NUM_SAMPLES_TO_PLOT = 10
+TEST_DATA_PATH = 'datasets/normal_test.npz' # Change to normal_train.npz if val doesn't exist yet
+CLIP_MODEL_PATH = "multitask_clip_best_model_normal.pth"
+DECODER_MODEL_PATH = "multitask_decoder_best_model_normal.pth"
+NUM_SAMPLES_TO_PLOT = 4
 
 def set_seed(seed):
     random.seed(seed)
@@ -223,96 +223,57 @@ def visualize_results(ppg, ecg_true, ecg_pred, sample_idx, record_name):
     
     error_signal = ecg_true - ecg_pred
     print(f"Visualizing results for Record: {record_name}")
-    # print("ecg_true: ", ecg_true)
-    # print("ecg_pred: ", ecg_pred)
-    # print("error_signal: ", error_signal)
-    # check_phase_shift_and_error(ecg_true, ecg_pred, fs=125, record_name=record_name)
-    
-    #################################################################################
-    # t = np.arange(len(ppg))
-
-    # plt.figure(figsize=(12, 10))
-    
-    # # Tiêu đề chính
-    # plt.suptitle(f"Record: {record_name}", fontsize=16, fontweight='bold')
-
-    # # 1. PPG Input (Giữ riêng ở trên cùng)
-    # plt.subplot(3, 1, 1)
-    # plt.plot(t, ppg, color='green', label='Input PPG', linewidth=1.5)
-    # plt.title("Input PPG Signal")
-    # plt.ylabel("Amplitude")
-    # plt.legend(loc='upper right')
-    # plt.grid(True, alpha=0.3)
-
-    # # 2. Comparison: Ground Truth vs Predicted (CÙNG TRÊN 1 TRỤC)
-    # plt.subplot(3, 1, 2)
-    # plt.plot(t, ecg_true, color='black', label='Ground Truth ECG', linewidth=1.5, alpha=0.8)
-    # plt.plot(t, ecg_pred, color='red', label='Predicted ECG', linestyle='--', linewidth=1.5)
-    # plt.title("Comparison: Ground Truth vs Predicted ECG")
-    # plt.ylabel("Amplitude")
-    # plt.legend(loc='upper right')
-    # plt.grid(True, alpha=0.3)
-
-    # # 3. Error Signal (Giữ riêng ở dưới cùng để xem độ lệch)
-    # plt.subplot(3, 1, 3)
-    # plt.plot(t, error_signal, color='purple', label='Error (True - Pred)')
-    # plt.fill_between(t, error_signal, color='purple', alpha=0.2) # Tô màu vùng lỗi
-    # plt.title("Error Signal")
-    # plt.xlabel("Time Samples")
-    # plt.ylabel("Difference")
-    # plt.legend(loc='upper right')
-    # plt.grid(True, alpha=0.3)
-
-    # plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    # plt.show()
 
     #################################################################################
 
-    # # Calculate Error Signal (Difference)
-    # # Create Time Axis (optional, assuming indices)
-    # t = np.arange(len(ppg))
+    # Calculate Error Signal (Difference)
+    # Create Time Axis (optional, assuming indices)
+    t = np.arange(len(ppg))
 
-    # plt.figure(figsize=(12, 10))
+    plt.figure(figsize=(12, 10))
     
-    # # --- CẬP NHẬT: Thêm tên Record vào tiêu đề chính ---
-    # plt.suptitle(f"Record: {record_name}", fontsize=16, fontweight='bold')
+    # --- CẬP NHẬT: Thêm tên Record vào tiêu đề chính ---
+    plt.suptitle(f"Record: {record_name}", fontsize=16, fontweight='bold')
 
-    # # 1. PPG Input
-    # plt.subplot(4, 1, 1)
-    # plt.plot(t, ppg, color='green', label='Input PPG')
-    # plt.title("Input PPG Signal")
-    # plt.ylabel("Amplitude")
-    # plt.legend(loc='upper right')
-    # plt.grid(True, alpha=0.3)
+    # 1. PPG Input
+    plt.subplot(4, 1, 1)
+    plt.plot(t, ppg, color='green', label='Input PPG')
+    plt.title("Input PPG Signal")
+    plt.ylabel("Amplitude")
+    plt.legend(loc='upper right')
+    plt.grid(True, alpha=0.3)
 
-    # # 2. Ground Truth ECG
-    # plt.subplot(4, 1, 2)
-    # plt.plot(t, ecg_true, color='blue', label='Ground Truth ECG')
-    # plt.title("Ground Truth ECG")
-    # plt.ylabel("Amplitude")
-    # plt.legend(loc='upper right')
-    # plt.grid(True, alpha=0.3)
+    # 2. Ground Truth ECG
+    plt.subplot(4, 1, 2)
+    plt.plot(t, ecg_true, color='blue', label='Ground Truth ECG')
+    plt.title("Ground Truth ECG")
+    plt.ylabel("Amplitude")
+    plt.legend(loc='upper right')
+    plt.grid(True, alpha=0.3)
 
-    # # 3. Predicted ECG
-    # plt.subplot(4, 1, 3)
-    # plt.plot(t, ecg_pred, color='red', label='Predicted ECG')
-    # plt.title("Predicted ECG (Reconstructed)")
-    # plt.ylabel("Amplitude")
-    # plt.legend(loc='upper right')
-    # plt.grid(True, alpha=0.3)
+    # 3. Predicted ECG
+    plt.subplot(4, 1, 3)
+    plt.plot(t, ecg_pred, color='red', label='Predicted ECG')
+    plt.title("Predicted ECG (Reconstructed)")
+    plt.ylabel("Amplitude")
+    plt.legend(loc='upper right')
+    plt.grid(True, alpha=0.3)
 
-    # # 4. Error Signal
-    # plt.subplot(4, 1, 4)
-    # plt.plot(t, error_signal, color='purple', label='Error (True - Pred)')
-    # plt.fill_between(t, error_signal, color='purple', alpha=0.2) # Shading
-    # plt.title("Error Signal")
-    # plt.xlabel("Time Samples")
-    # plt.ylabel("Difference")
-    # plt.legend(loc='upper right')
-    # plt.grid(True, alpha=0.3)
+    # 4. Error Signal
+    plt.subplot(4, 1, 4)
+    plt.plot(t, error_signal, color='purple', label='Error (True - Pred)')
+    plt.fill_between(t, error_signal, color='purple', alpha=0.2) # Shading
+    plt.title("Error Signal")
+    plt.xlabel("Time Samples")
+    plt.ylabel("Difference")
+    plt.legend(loc='upper right')
+    plt.grid(True, alpha=0.3)
 
-    # plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    # plt.show()
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    plt.show()
+
+    check_phase_shift_and_error(ecg_true, ecg_pred, fs=125, record_name=record_name)
+
 
 def run_visualization():
     g = torch.Generator()
@@ -332,7 +293,7 @@ def run_visualization():
 
     seen_records = set()
     samples_collected = 0
-    TARGET_SAMPLES = 10
+    TARGET_SAMPLES = 4
     print(f"Running inference to find {TARGET_SAMPLES} unique records...")
     # Inference Loop
     print("Running inference...")
@@ -426,24 +387,26 @@ def run_loss():
             ecg_true_np = ecg_target.cpu().squeeze().numpy()
             ecg_pred_np = predicted_ecg.cpu().squeeze().numpy()
             current_batch_size = ecg_target.size(0)
-            # rmse , pearson = calculate_metrics(ecg_true_np, ecg_pred_np)
-            # total_rmse += rmse * current_batch_size
-            # total_pearson += pearson * current_batch_size
+            rmse , pearson = calculate_metrics(ecg_true_np, ecg_pred_np)
+            total_rmse += rmse * current_batch_size
+            total_pearson += pearson * current_batch_size
             # total_prd += calculate_prd(ecg_true_np, ecg_pred_np) * current_batch_size
             # total_ssim += calculate_ssim_1d(ecg_true_np, ecg_pred_np) * current_batch_size
             # total_dtw += calculate_dtw_distance(ecg_true_np, ecg_pred_np) * current_batch_size
-            total_cosine += calculate_cosine_similarity(ecg_true_np, ecg_pred_np) * current_batch_size
+            # total_cosine += calculate_cosine_similarity(ecg_true_np, ecg_pred_np) * current_batch_size
             total_samples += current_batch_size
             # print("shape: ", current_batch_size)
             # print(f"Record name {record_names}")
             # print(f"Batch {i+1} : RMSE = {rmse:.4f}, Pearson = {pearson:.4f}")
-    # avg_rmse = total_rmse / total_samples
-    # avg_pearson = total_pearson / total_samples
+    avg_rmse = total_rmse / total_samples
+    avg_pearson = total_pearson / total_samples
     # avg_prd = total_prd / total_samples
     # avg_ssim = total_ssim / total_samples
     # avg_dtw = total_dtw / total_samples
     avg_cosine = total_cosine / total_samples
-    print(f"Average Cosine Similarity: {avg_cosine:.4f}")
+    # print(f"Average Cosine Similarity: {avg_cosine:.4f}")
+    print(f"Average : RMSE = {avg_rmse:.4f}, Pearson = {avg_pearson:.4f}")
+
     # print(f"Average : RMSE = {avg_rmse:.4f}, Pearson = {avg_pearson:.4f}, PRD = {avg_prd:.4f}, SSIM = {avg_ssim:.4f}, DTW = {avg_dtw:.4f}, Cosine = {avg_cosine:.4f}")
     return
 if __name__ == "__main__":
