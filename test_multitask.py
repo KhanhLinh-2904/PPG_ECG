@@ -16,9 +16,9 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 BATCH_SIZE = 16 # Small batch for testing
 INPUT_LENGTH = 2400
 OUTPUT_EMBED_DIM = 128
-TEST_DATA_PATH = 'datasets/total_record_z_test.npz' # Change to normal_train.npz if val doesn't exist yet
-CLIP_MODEL_PATH = "multitask_clip_best_model_total_record_z.pth"
-DECODER_MODEL_PATH = "multitask_decoder_best_model_total_record_z.pth"
+TEST_DATA_PATH = 'datasets/normal_test.npz' # Change to normal_train.npz if val doesn't exist yet
+CLIP_MODEL_PATH = "multitask_clip_best_model_normal.pth"
+DECODER_MODEL_PATH = "multitask_decoder_best_model_normal.pth"
 NUM_SAMPLES_TO_PLOT = 10
 
 def set_seed(seed):
@@ -215,6 +215,32 @@ def check_phase_shift_and_error(ecg_true, ecg_pred, fs=125, record_name="Unknown
     plt.tight_layout()
     plt.show()
 
+
+def shift_ecg(ecg_true, ecg_pred, fs=125):
+    ecg_true = np.array(ecg_true).flatten()
+    ecg_pred = np.array(ecg_pred).flatten()
+    # 2. Tính Cross-Correlation
+    correlation = signal.correlate(ecg_true, ecg_pred, mode='full')
+    lags = signal.correlation_lags(len(ecg_true), len(ecg_pred), mode='full')
+    
+    # 3. Tìm độ lệch (Lag) tốt nhất
+    max_corr_index = np.argmax(correlation)
+    lag_samples = lags[max_corr_index]
+   
+    if lag_samples > 0:
+        ecg_pred_corrected = np.pad(ecg_pred, (lag_samples, 0), 'constant')[:len(ecg_true)]
+        
+    elif lag_samples < 0:
+        abs_lag = abs(lag_samples) 
+
+        ecg_pred_corrected = np.pad(ecg_pred, (0, abs_lag), 'constant')[abs_lag:]
+        
+    else:
+        ecg_pred_corrected = ecg_pred
+
+    return ecg_pred_corrected
+
+
 def visualize_results(ppg, ecg_true, ecg_pred, sample_idx, record_name):
     """
     Draws 4 subplots: PPG, True ECG, Predicted ECG, Error Signal.
@@ -226,7 +252,6 @@ def visualize_results(ppg, ecg_true, ecg_pred, sample_idx, record_name):
     # print("ecg_true: ", ecg_true)
     # print("ecg_pred: ", ecg_pred)
     # print("error_signal: ", error_signal)
-    # check_phase_shift_and_error(ecg_true, ecg_pred, fs=125, record_name=record_name)
     
     #################################################################################
     # t = np.arange(len(ppg))
@@ -268,51 +293,53 @@ def visualize_results(ppg, ecg_true, ecg_pred, sample_idx, record_name):
 
     #################################################################################
 
-    # # Calculate Error Signal (Difference)
-    # # Create Time Axis (optional, assuming indices)
-    # t = np.arange(len(ppg))
+    # Calculate Error Signal (Difference)
+    # Create Time Axis (optional, assuming indices)
+    t = np.arange(len(ppg))
 
-    # plt.figure(figsize=(12, 10))
+    plt.figure(figsize=(12, 10))
     
-    # # --- CẬP NHẬT: Thêm tên Record vào tiêu đề chính ---
-    # plt.suptitle(f"Record: {record_name}", fontsize=16, fontweight='bold')
+    # --- CẬP NHẬT: Thêm tên Record vào tiêu đề chính ---
+    plt.suptitle(f"Record: {record_name}", fontsize=16, fontweight='bold')
 
-    # # 1. PPG Input
-    # plt.subplot(4, 1, 1)
-    # plt.plot(t, ppg, color='green', label='Input PPG')
-    # plt.title("Input PPG Signal")
-    # plt.ylabel("Amplitude")
-    # plt.legend(loc='upper right')
-    # plt.grid(True, alpha=0.3)
+    # 1. PPG Input
+    plt.subplot(4, 1, 1)
+    plt.plot(t, ppg, color='green', label='Input PPG')
+    plt.title("Input PPG Signal")
+    plt.ylabel("Amplitude")
+    plt.legend(loc='upper right')
+    plt.grid(True, alpha=0.3)
 
-    # # 2. Ground Truth ECG
-    # plt.subplot(4, 1, 2)
-    # plt.plot(t, ecg_true, color='blue', label='Ground Truth ECG')
-    # plt.title("Ground Truth ECG")
-    # plt.ylabel("Amplitude")
-    # plt.legend(loc='upper right')
-    # plt.grid(True, alpha=0.3)
+    # 2. Ground Truth ECG
+    plt.subplot(4, 1, 2)
+    plt.plot(t, ecg_true, color='blue', label='Ground Truth ECG')
+    plt.title("Ground Truth ECG")
+    plt.ylabel("Amplitude")
+    plt.legend(loc='upper right')
+    plt.grid(True, alpha=0.3)
 
-    # # 3. Predicted ECG
-    # plt.subplot(4, 1, 3)
-    # plt.plot(t, ecg_pred, color='red', label='Predicted ECG')
-    # plt.title("Predicted ECG (Reconstructed)")
-    # plt.ylabel("Amplitude")
-    # plt.legend(loc='upper right')
-    # plt.grid(True, alpha=0.3)
+    # 3. Predicted ECG
+    plt.subplot(4, 1, 3)
+    plt.plot(t, ecg_pred, color='red', label='Predicted ECG')
+    plt.title("Predicted ECG (Reconstructed)")
+    plt.ylabel("Amplitude")
+    plt.legend(loc='upper right')
+    plt.grid(True, alpha=0.3)
 
-    # # 4. Error Signal
-    # plt.subplot(4, 1, 4)
-    # plt.plot(t, error_signal, color='purple', label='Error (True - Pred)')
-    # plt.fill_between(t, error_signal, color='purple', alpha=0.2) # Shading
-    # plt.title("Error Signal")
-    # plt.xlabel("Time Samples")
-    # plt.ylabel("Difference")
-    # plt.legend(loc='upper right')
-    # plt.grid(True, alpha=0.3)
+    # 4. Error Signal
+    plt.subplot(4, 1, 4)
+    plt.plot(t, error_signal, color='purple', label='Error (True - Pred)')
+    plt.fill_between(t, error_signal, color='purple', alpha=0.2) # Shading
+    plt.title("Error Signal")
+    plt.xlabel("Time Samples")
+    plt.ylabel("Difference")
+    plt.legend(loc='upper right')
+    plt.grid(True, alpha=0.3)
 
-    # plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    # plt.show()
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    plt.show()
+    check_phase_shift_and_error(ecg_true, ecg_pred, fs=125, record_name=record_name)
+
 
 def run_visualization():
     g = torch.Generator()
@@ -332,8 +359,7 @@ def run_visualization():
 
     seen_records = set()
     samples_collected = 0
-    TARGET_SAMPLES = 10
-    print(f"Running inference to find {TARGET_SAMPLES} unique records...")
+    seen_records = set()
     # Inference Loop
     print("Running inference...")
     with torch.no_grad():
@@ -355,31 +381,25 @@ def run_visualization():
             ecg_true_np = ecg_target.cpu().squeeze().numpy()
             ecg_pred_np = predicted_ecg.cpu().squeeze().numpy()
             current_batch_size = ppg_np.shape[0]
+            
+            # print("Current batch size: ", current_batch_size)
+            # print("Record names in this batch: ", len(record_names))
             for idx in range(current_batch_size):
-                # Lấy tên record tương ứng
+                if idx >= len(record_names):
+                    return
                 current_rec_name = record_names[idx]
-
-                # Kiểm tra xem record này đã vẽ chưa
                 if current_rec_name not in seen_records:
-                    print(f"Found unique record [{samples_collected + 1}/{TARGET_SAMPLES}]: {current_rec_name}")
+                    print(f"Drawing first segment found for record: {current_rec_name}")
                     
-                    # Gọi hàm visualize
                     visualize_results(
                         ppg_np[idx], 
                         ecg_true_np[idx], 
                         ecg_pred_np[idx], 
-                        samples_collected,  # Dùng biến đếm làm ID cho hình ảnh
-                         current_rec_name
+                        len(seen_records), 
+                        current_rec_name
                     )
                     
-                    # Đánh dấu đã xem và tăng biến đếm
                     seen_records.add(current_rec_name)
-                    samples_collected += 1
-
-                    # Điều kiện dừng: Đã đủ 4 mẫu khác nhau
-                    if samples_collected >= TARGET_SAMPLES:
-                        print("Done plotting 4 unique records.")
-                        return
 
 
 def run_loss():
@@ -425,28 +445,38 @@ def run_loss():
             ppg_np = ppg_input.cpu().squeeze().numpy()
             ecg_true_np = ecg_target.cpu().squeeze().numpy()
             ecg_pred_np = predicted_ecg.cpu().squeeze().numpy()
-            current_batch_size = ecg_target.size(0)
-            # rmse , pearson = calculate_metrics(ecg_true_np, ecg_pred_np)
-            # total_rmse += rmse * current_batch_size
-            # total_pearson += pearson * current_batch_size
-            # total_prd += calculate_prd(ecg_true_np, ecg_pred_np) * current_batch_size
-            # total_ssim += calculate_ssim_1d(ecg_true_np, ecg_pred_np) * current_batch_size
-            # total_dtw += calculate_dtw_distance(ecg_true_np, ecg_pred_np) * current_batch_size
-            total_cosine += calculate_cosine_similarity(ecg_true_np, ecg_pred_np) * current_batch_size
-            total_samples += current_batch_size
-            # print("shape: ", current_batch_size)
-            # print(f"Record name {record_names}")
-            # print(f"Batch {i+1} : RMSE = {rmse:.4f}, Pearson = {pearson:.4f}")
-    # avg_rmse = total_rmse / total_samples
-    # avg_pearson = total_pearson / total_samples
+            current_batch_size = ecg_true_np.shape[0]
+            # Căn chỉnh pha cho từng mẫu đơn lẻ
+            for b in range(current_batch_size):
+                true_single = ecg_true_np[b]
+                pred_single = ecg_pred_np[b]
+
+                # Gọi hàm shift cho 1 mẫu
+                corrected_pred_single = shift_ecg(true_single, pred_single, fs=125)
+
+                # Tính toán metric cho từng mẫu sau khi đã "fix"
+                rmse, pearson = calculate_metrics(true_single, corrected_pred_single)
+                dtw = calculate_dtw_distance(true_single, corrected_pred_single)
+                cosine = calculate_cosine_similarity(true_single, corrected_pred_single)
+
+                # Cộng dồn vào biến tổng
+                total_rmse += rmse
+                total_pearson += pearson
+                total_dtw += dtw
+                total_cosine += cosine
+                total_samples += 1
+
+    avg_rmse = total_rmse / total_samples
+    avg_pearson = total_pearson / total_samples
     # avg_prd = total_prd / total_samples
     # avg_ssim = total_ssim / total_samples
-    # avg_dtw = total_dtw / total_samples
+    avg_dtw = total_dtw / total_samples
     avg_cosine = total_cosine / total_samples
-    print(f"Average Cosine Similarity: {avg_cosine:.4f}")
-    # print(f"Average : RMSE = {avg_rmse:.4f}, Pearson = {avg_pearson:.4f}, PRD = {avg_prd:.4f}, SSIM = {avg_ssim:.4f}, DTW = {avg_dtw:.4f}, Cosine = {avg_cosine:.4f}")
+    # print(f"Average Cosine Similarity: {avg_cosine:.4f}")
+    print(f"Average : rRMSE = {avg_rmse:.4f}, Pearson = {avg_pearson:.4f}, DTW = {avg_dtw:.4f}, Cosine = {avg_cosine:.4f}")
+    # print(f"Average : rRMSE = {avg_rmse:.4f}, Pearson = {avg_pearson:.4f}, PRD = {avg_prd:.4f}, SSIM = {avg_ssim:.4f}, DTW = {avg_dtw:.4f}, Cosine = {avg_cosine:.4f}")
     return
 if __name__ == "__main__":
     set_seed(SEED)
-    run_visualization()
+    # run_visualization()
     run_loss()

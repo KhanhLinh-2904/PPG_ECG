@@ -14,6 +14,10 @@ def calculate_metrics(y_true, y_pred):
     # Đảm bảo dữ liệu là mảng numpy
     y_true = np.array(y_true).flatten()
     y_pred = np.array(y_pred).flatten()
+
+    if y_true.size == 0 or y_pred.size == 0:
+        print("Empty input arrays.")
+        return 0.0, 0.0
     
     # 1. Tính rRMSE (Relative Root Mean-Squared Error)
     # Công thức: ||y_true - y_pred||2 / ||y_true||2
@@ -24,9 +28,13 @@ def calculate_metrics(y_true, y_pred):
     # Công thức: (y_true - mean_true).T @ (y_pred - mean_pred) / (norm_diff_true * norm_diff_pred)
     y_true_centered = y_true - np.mean(y_true)
     y_pred_centered = y_pred - np.mean(y_pred)
-    
+    print("y_true_centered:", y_true_centered)
+    print("y_pred_centered:", y_pred_centered)
     numerator = np.dot(y_true_centered, y_pred_centered)
     denominator = np.linalg.norm(y_true_centered, ord=2) * np.linalg.norm(y_pred_centered, ord=2)
+    print("denominator:", denominator)
+    # if denominator == 0:
+    #     denominator == 0.000001 # Hoặc np.nan tùy bạn muốn xử lý thế nào
     
     rho = numerator / denominator
     
@@ -81,8 +89,8 @@ def calculate_dtw_distance(y_true, y_pred, window=100):
     """
     # 1. Tiền xử lý dữ liệu để tránh lỗi 'setting an array element with a sequence'
     # Lưu ý: Squeeze/Flatten nên làm bên ngoài hàm njit hoặc dùng np.reshape
-    y_t = y_true.ravel()
-    y_p = y_pred.ravel()
+    y_t = np.asarray(y_true).reshape(-1)
+    y_p = np.asarray(y_pred).reshape(-1)
     
     n = len(y_t)
     m = len(y_p)

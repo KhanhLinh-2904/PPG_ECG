@@ -93,7 +93,6 @@ class ResNet50_1D(nn.Module):
         f4 = self.layer4(f3) 
      
         feature = f4
-        print("Feature map shape before avgpool: ", x.shape)
         x = self.avgpool(feature)
         x = torch.flatten(x, 1)
         x = self.fc(x)
