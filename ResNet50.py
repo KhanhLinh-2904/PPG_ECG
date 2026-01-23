@@ -106,15 +106,11 @@ if __name__ == '__main__':
         num_classes=OUTPUT_EMBED_DIM
     )
     
-    # Tạo dữ liệu ECG đầu vào mô phỏng (Batch size = 4)
-    # Tín hiệu ECG đơn kênh [Batch, Channels=1, Length]
     dummy_ecg = torch.randn(4, 1, ECG_INPUT_LENGTH)
     
-    # Lan truyền thuận
     print(f"Shape of dummy ECG input: {dummy_ecg.shape}")
     
     output_ecg_embedding,_,_ = model(dummy_ecg)
     
-    # Kết quả
     print(f"Shape of predicted ECG features output: {output_ecg_embedding.shape}")
     print(f"Expected shape: [4, 128] (Batch size, ECG Embedding Dimension)")

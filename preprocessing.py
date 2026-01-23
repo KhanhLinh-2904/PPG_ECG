@@ -11,12 +11,12 @@ import random
 from sklearn.metrics.pairwise import cosine_similarity
 import networkx as nx
 from scipy.signal import correlate
-# --- CÁC HẰNG SỐ (CONSTANTS) ---
+# --- (CONSTANTS) ---
 SEED = 44
 PAUSE_TIME = 0.001
-FS = 125  # Tần số lấy mẫu mặc định (Default Sampling Frequency)
+FS = 125  
 WINDOW_SECONDS = 10
-STEP_SIZE = 10 # Thay vì 10, nên dùng giá trị là bội số của fs để tránh lỗi hiển thị/tính toán
+STEP_SIZE = 10 
 WINDOW_SAMPLES = int(FS * WINDOW_SECONDS)
 SLICE_LENGTH = 2400
 OVERLAP = 2400
@@ -28,7 +28,7 @@ def set_seed(seed_value: int):
     np.random.seed(seed_value)
     os.environ["PYTHONHASHSEED"] = str(seed_value)
     print(f"Random seed set to: {seed_value}")
-# --- LỚP XỬ LÝ TÍN HIỆU (SIGNAL PROCESSING CLASS) ---
+# ---  (SIGNAL PROCESSING CLASS) ---
 
 class SignalProcessor:
     """Chứa các hàm lọc, chuẩn hóa và tiền xử lý tín hiệu."""
@@ -137,12 +137,14 @@ class SignalProcessor:
 # --- (DATA VISUALIZER CLASS) ---
 
 class DataVisualizer:
+
     def __init__(self, fs: float, window_seconds: int, pause_time: float, step_size: int):
         self.fs = fs
         self.window_seconds = window_seconds
         self.pause_time = pause_time
         self.step_size = step_size
         self.window_samples = int(fs * window_seconds)
+
     def visualize_specific_segment(self, record_name: str, ppg_segment: np.ndarray, ecg_segment: np.ndarray):
       
         if len(ppg_segment) != len(ecg_segment):
@@ -179,20 +181,16 @@ class DataVisualizer:
     def visualize_sliding_record(self, record_name: str, ppg_signal: np.ndarray, ecg_signal: np.ndarray):
         total_samples = len(ppg_signal)
         
-        # 1. Kiểm tra độ dài dữ liệu
         if total_samples < self.window_samples:
             print(f"Record {record_name} quá ngắn ({total_samples} samples). Bỏ qua.")
             return
 
-        # 2. Setup biểu đồ
         plt.ion()
         fig, ax = plt.subplots(1, 1, figsize=(12, 6))
         
         ax.set_title(f"Record: {record_name} (FS={self.fs}Hz)")
         x_axis = np.linspace(0, self.window_seconds, self.window_samples)
 
-        # Khởi tạo 2 đường line rỗng
-        # Lưu ý: Set alpha thấp hơn (0.7) để nhìn thấy nếu chúng chồng lên nhau
         line_ppg, = ax.plot(x_axis, np.zeros(self.window_samples), color="blue", linewidth=1.5, label="PPG", alpha=0.7)
         line_ecg, = ax.plot(x_axis, np.zeros(self.window_samples), color="red", linewidth=1.5, label="ECG", alpha=0.7)
 
@@ -204,44 +202,33 @@ class DataVisualizer:
         print("Bắt đầu visualization... Nhấn Ctrl+C để dừng.")
 
         try:
-            # 3. Vòng lặp trượt (Sliding Window)
+            # 3. (Sliding Window)
             for start_idx in range(0, total_samples - self.window_samples, self.step_size):
-                # Kiểm tra nếu cửa sổ plot bị tắt thì dừng luôn vòng lặp
                 if not plt.fignum_exists(fig.number):
                     break
                 
                 end_idx = start_idx + self.window_samples
                 
-                # Cắt dữ liệu
                 window_ppg = ppg_signal[start_idx:end_idx]
                 window_ecg = ecg_signal[start_idx:end_idx]
                 
-                # --- XỬ LÝ AN TOÀN DỮ LIỆU ---
-                # Thay thế NaN bằng 0 để tránh lỗi vẽ biểu đồ
                 window_ppg = np.nan_to_num(window_ppg)
                 window_ecg = np.nan_to_num(window_ecg)
 
-                # Cập nhật dữ liệu cho đường line
                 line_ppg.set_ydata(window_ppg)
                 line_ecg.set_ydata(window_ecg)
                 
-                # --- KEY FIX: DYNAMIC RESCALING (TỰ ĐỘNG CO GIÃN) ---
-                # Tìm min/max chung của cả 2 tín hiệu trong khung hình này
                 current_min = min(np.min(window_ppg), np.min(window_ecg))
                 current_max = max(np.max(window_ppg), np.max(window_ecg))
                 
-                # Thêm lề (margin) 10% để đỉnh sóng không chạm sát mép
                 margin = (current_max - current_min) * 0.1 if (current_max != current_min) else 1.0
                 
                 ax.set_ylim(current_min - margin, current_max + margin)
-                # ----------------------------------------------------
 
-                # Cập nhật tiêu đề với thời gian thực
                 curr_time_start = start_idx / self.fs
                 curr_time_end = end_idx / self.fs
                 ax.set_title(f"Record: {record_name} | Time: {curr_time_start:.2f}s - {curr_time_end:.2f}s")
 
-                # Vẽ lại
                 fig.canvas.draw_idle()
                 fig.canvas.flush_events()
                 
@@ -254,7 +241,7 @@ class DataVisualizer:
             print(f"Lỗi xảy ra: {e}")
         finally:
             plt.close(fig)
-            plt.ioff() # Tắt chế độ interactive
+            plt.ioff() 
             print("Visualization hoàn tất.")
 
 def get_max_cross_correlation_score(x, y):
@@ -408,12 +395,7 @@ def load_and_slice_all_signals(datapath: str, record_list: List[str]):
                 prev_ecg = record_ecgs[-1]
             ppg_corr = get_max_cross_correlation_score(prev_ppg, ppg_slice)    
             ecg_corr = get_max_cross_correlation_score(prev_ecg, ecg_slice)  
-            print("-----------------------")
-            print("ppg_corr: ", ppg_corr)  
-            print("ecg_corr: ", ecg_corr)  
-            print("-----------------------")
-
-            # or ppg_corr <= 0.7 or ecg_corr <= 0.3
+           
             if np.isnan(ppg_slice).any() or np.isnan(ecg_slice).any():
                 start_idx += OVERLAP
                 continue
@@ -428,38 +410,29 @@ def load_and_slice_all_signals(datapath: str, record_list: List[str]):
 def split_segments_and_save_by_record(total_data: Dict[str, Any], save_prefix: str, ratios: Tuple[float, float]):
     os.makedirs("datasets", exist_ok=True)
     
-    # 1. Tiền xử lý gom nhóm (giữ nguyên logic của bạn)
     total_data = group_ecg_segment(total_data, threshold=0.9) 
     
-    # Lấy danh sách records và groupIDs từ total_data
     all_records = np.array(total_data["records"])
     all_group_ids = np.array(total_data["groupIDs"])
 
-    # 2. Xác định danh sách các Record duy nhất
     unique_records = np.unique(all_records)
     n_records = len(unique_records)
     
     print(f"\n--- THỐNG KÊ TỔNG QUÁT ---")
     print(f"Tổng số lượng Records gốc: {n_records}")
 
-    # 3. Shuffle danh sách RECORD (không phải groupID) để chia train/test
     np.random.shuffle(unique_records)
     
-    # 4. Tính toán chia theo tỷ lệ records (ví dụ 80:20)
     n_train_records = int(ratios[0] * n_records)
-    # Đảm bảo có ít nhất 1 record cho test nếu n_records nhỏ
     if n_train_records == n_records and n_records > 1:
         n_train_records -= 1
         
     train_record_names = unique_records[:n_train_records]
     test_record_names = unique_records[n_train_records:]
 
-    # 5. Map ngược từ Record Name về Segment Index
-    # Tìm tất cả index mà record thuộc về danh sách train_record_names
     train_indices = np.where(np.isin(all_records, train_record_names))[0].tolist()
     test_indices = np.where(np.isin(all_records, test_record_names))[0].tolist()
     
-    # 6. Thống kê chi tiết dựa trên Group ID trong mỗi tập để bạn theo dõi
     def get_group_stats(indices):
         groups_in_split = all_group_ids[indices]
         u_ids, counts = np.unique(groups_in_split, return_counts=True)
@@ -477,7 +450,6 @@ def split_segments_and_save_by_record(total_data: Dict[str, Any], save_prefix: s
     print(f"TEST Set: {len(test_record_names)} records")
     print(f"  └─ Tổng {n_groups_test} groups ({n_clusters_test} Clusters, {n_singles_test} Singles)")
 
-    # 7. Shuffle lại index trong từng tập để tăng tính ngẫu nhiên khi train
     random.shuffle(train_indices)
     random.shuffle(test_indices)
 
@@ -490,7 +462,6 @@ def split_segments_and_save_by_record(total_data: Dict[str, Any], save_prefix: s
         "test": test_indices
     }
     
-    # 8. Lưu file
     for split_name, current_indices in splits.items():
         save_path = f"datasets/{save_prefix}_{split_name}.npz"
         
@@ -513,9 +484,6 @@ def split_segments_and_save(total_data: Dict[str, Any], save_prefix: str, ratios
   
     os.makedirs("datasets", exist_ok=True)
     
-    # 1. Gom nhóm
-    # original_records = total_data.get("records")
-    
     total_data = group_ecg_segment(total_data, threshold=0.9) 
     all_group_ids = np.array(total_data["groupIDs"])
 
@@ -525,33 +493,20 @@ def split_segments_and_save(total_data: Dict[str, Any], save_prefix: str, ratios
     print(f"\n--- THỐNG KÊ TỔNG QUÁT ---")
     print(f"Tổng số lượng Group ID: {n_groups}")
 
-    # 3. Shuffle danh sách GROUP ID
     np.random.shuffle(unique_groups)
     
-    # 4. Tính toán chia nhóm
     n_train_groups = int(ratios[0] * n_groups)
     
     train_group_ids = unique_groups[:n_train_groups]
     test_group_ids = unique_groups[n_train_groups:]
 
-    # =================================================================
-    # --- ĐOẠN CODE THỐNG KÊ MỚI BỔ SUNG ---
-    # =================================================================
-    
-    # Bước A: Đếm kích thước của tất cả các nhóm trong dữ liệu gốc
-    # unique_ids: danh sách ID, counts: số lượng phần tử của ID đó
     unique_ids_all, counts_all = np.unique(all_group_ids, return_counts=True)
     
-    # Bước B: Xác định ID nào là Single (size=1) và ID nào là Cluster (size>1)
     single_ids = unique_ids_all[counts_all == 1]
-    # cluster_ids = unique_ids_all[counts_all > 1] # Không cần dùng, nhưng để hiểu logic
-    
-    # Bước C: Đếm số lượng Single trong tập Train
-    # np.intersect1d tìm các phần tử chung giữa 2 mảng (IDs của Train giao với IDs của Singles)
+   
     n_singles_train = len(np.intersect1d(train_group_ids, single_ids))
     n_clusters_train = len(train_group_ids) - n_singles_train
     
-    # Bước D: Đếm số lượng Single trong tập Test
     n_singles_test = len(np.intersect1d(test_group_ids, single_ids))
     n_clusters_test = len(test_group_ids) - n_singles_test
     
@@ -563,13 +518,10 @@ def split_segments_and_save(total_data: Dict[str, Any], save_prefix: str, ratios
     print(f"TEST Set ({len(test_group_ids)} nhóm):")
     print(f"  ✅ Clusters (>1 phần tử): {n_clusters_test} nhóm")
     print(f"  ⚠️ Singles  (1 phần tử):  {n_singles_test} nhóm")
-    # =================================================================
 
-    # 5. Map ngược từ Group ID về Segment Index
     train_indices = np.where(np.isin(all_group_ids, train_group_ids))[0].tolist()
     test_indices = np.where(np.isin(all_group_ids, test_group_ids))[0].tolist()
     
-    # 6. Shuffle lại index trong từng tập
     random.shuffle(train_indices)
     random.shuffle(test_indices)
 
@@ -582,7 +534,6 @@ def split_segments_and_save(total_data: Dict[str, Any], save_prefix: str, ratios
         "test": test_indices
     }
     
-    # 7. Lưu file
     for split_name, current_indices in splits.items():
         save_path = f"datasets/{save_prefix}_{split_name}.npz"
         
@@ -647,20 +598,18 @@ if __name__ == "__main__":
     non_af_labels = [0] * len(non_af_data_ppg)
     af_labels = [1] * len(af_data_ppg)
 
-    # 3. Hợp nhất dữ liệu (Concatenation)
-    # Sử dụng dấu + để nối các list lại với nhau
+    
     all_ppgs = non_af_data_ppg + af_data_ppg
     all_ecgs = non_af_data_ecg + af_data_ecg
     all_records = non_af_records + af_records
     all_labels = non_af_labels + af_labels
 
-    # 4. Lưu vào cấu trúc total_data
     total_data = {
         "ppgs": all_ppgs,
         "ecgs": all_ecgs,
-        "labels": all_labels,    # Nhãn 0 và 1 đã được hợp nhất
+        "labels": all_labels,    
         "records": all_records,
-        "groupIDs": [],          # Sẽ được điền bởi hàm group_ecg_segment sau
+        "groupIDs": [],          
     }
 
     print(f"Tổng số segments Non-AF: {len(non_af_data_ppg)}")

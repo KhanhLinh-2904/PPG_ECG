@@ -14,71 +14,24 @@ def calculate_metrics(y_true, y_pred):
     # Đảm bảo dữ liệu là mảng numpy
     y_true = np.array(y_true).flatten()
     y_pred = np.array(y_pred).flatten()
-
-    if y_true.size == 0 or y_pred.size == 0:
-        print("Empty input arrays.")
-        return 0.0, 0.0
     
     # 1. Tính rRMSE (Relative Root Mean-Squared Error)
     # Công thức: ||y_true - y_pred||2 / ||y_true||2
     error_vector = y_true - y_pred
+    # print("Error vector:", error_vector)
     rRMSE = np.linalg.norm(error_vector, ord=2) / np.linalg.norm(y_true, ord=2)
-    
+    # print("rRMSE calculation:", np.linalg.norm(error_vector, ord=2), np.linalg.norm(y_true, ord=2))
     # 2. Tính Pearson’s Correlation Coefficient (rho)
     # Công thức: (y_true - mean_true).T @ (y_pred - mean_pred) / (norm_diff_true * norm_diff_pred)
     y_true_centered = y_true - np.mean(y_true)
     y_pred_centered = y_pred - np.mean(y_pred)
-    print("y_true_centered:", y_true_centered)
-    print("y_pred_centered:", y_pred_centered)
+
     numerator = np.dot(y_true_centered, y_pred_centered)
     denominator = np.linalg.norm(y_true_centered, ord=2) * np.linalg.norm(y_pred_centered, ord=2)
-    print("denominator:", denominator)
-    # if denominator == 0:
-    #     denominator == 0.000001 # Hoặc np.nan tùy bạn muốn xử lý thế nào
-    
+
     rho = numerator / denominator
     
     return rRMSE, rho
-
-
-
-def calculate_prd(y_true, y_pred):
-    """
-    Tính Percent Root-mean-square Difference (PRD).
-    Đánh giá độ biến dạng của tín hiệu.
-    """
-    numerator = np.sqrt(np.sum((y_true - y_pred) ** 2))
-    denominator = np.sqrt(np.sum(y_true ** 2))
-    prd = (numerator / denominator) * 100
-    return prd
-
-def calculate_ssim_1d(y_true, y_pred, window_size=11, sigma=1.5):
-    """
-    Tính Structural Similarity Index (SSIM) cho tín hiệu 1D.
-    Đánh giá độ tương đồng về cấu trúc (hình dạng sóng).
-    """
-    # Các hằng số tránh chia cho 0
-    C1 = (0.01 * (np.max(y_true) - np.min(y_true)))**2
-    C2 = (0.03 * (np.max(y_true) - np.min(y_true)))**2
-
-    # Tính trung bình (mu) bằng Gaussian filter
-    mu1 = gaussian_filter(y_true, sigma)
-    mu2 = gaussian_filter(y_pred, sigma)
-
-    mu1_sq = mu1**2
-    mu2_sq = mu2**2
-    mu1_mu2 = mu1 * mu2
-
-    # Tính phương sai (sigma^2) và hiệp phương sai
-    sigma1_sq = gaussian_filter(y_true**2, sigma) - mu1_sq
-    sigma2_sq = gaussian_filter(y_pred**2, sigma) - mu2_sq
-    sigma12 = gaussian_filter(y_true * y_pred, sigma) - mu1_mu2
-
-    # Công thức SSIM
-    ssim_map = ((2 * mu1_mu2 + C1) * (2 * sigma12 + C2)) / \
-               ((mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2))
-
-    return np.mean(ssim_map)
 
 @njit
 def calculate_dtw_distance(y_true, y_pred, window=100):

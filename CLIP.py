@@ -32,7 +32,7 @@ class ECGEssembleCLIP(nn.Module):
         else:
             ecg_original_features, featured_ECG, feature_lists_ECG = self.encode_ecg(ecg_original)
             ecg_predicted_features, featured_PPG, feature_lists_PPG = self.encode_ppg(ppg_original)
-            # print("ecg_original_features shape: ", ecg_original_features.shape)
+           
             ecg_original_features = ecg_original_features / ecg_original_features.norm(dim=1, keepdim=True)
             ecg_predicted_features = ecg_predicted_features / ecg_predicted_features.norm(dim=1, keepdim=True)
 
@@ -48,7 +48,6 @@ class DecoderBlock_UNet(nn.Module):
         super().__init__()
         self.upsample = nn.Upsample(scale_factor=scale_factor, mode='linear', align_corners=False)
         
-        # Tính toán input channel thực tế cho Conv
         total_in_channels = in_channels + skip_channels
         
         self.conv = nn.Sequential(
@@ -61,16 +60,13 @@ class DecoderBlock_UNet(nn.Module):
         )
 
     def forward(self, x, skip=None):
-        # 1. Upsample trước
         x = self.upsample(x)
         
-        # 2. Xử lý Skip Connection
         if skip is not None:
-            # Handle trường hợp kích thước lệch nhau 1-2 pixel do làm tròn khi downsample
             if x.size(2) != skip.size(2):
                 x = nn.functional.interpolate(x, size=skip.size(2), mode='nearest')
             
-            # Nối channel: [Batch, C_x, L] + [Batch, C_skip, L] -> [Batch, C_x + C_skip, L]
+            #  channel: [Batch, C_x, L] + [Batch, C_skip, L] -> [Batch, C_x + C_skip, L]
             x = torch.cat([x, skip], dim=1) 
             
         return self.conv(x)
@@ -79,16 +75,13 @@ class ECGDecoder_UNet(nn.Module):
     def __init__(self, bottleneck_channels=2048):
         super().__init__()
         
-        # Adapter: Chuyển từ Bottleneck về kích thước bắt đầu decode
+        # Adapter: Bottleneck 
         self.adapter = nn.Sequential(
             nn.Conv1d(bottleneck_channels, 512, kernel_size=1),
             nn.BatchNorm1d(512),
             nn.ReLU()
         ) 
 
-        # Decoder Blocks (Lưu ý skip_channels phải khớp với Encoder ResNet50)
-        # ResNet50 channels thường là: [256, 512, 1024, 2048]
-        # Giả sử features_list trả về [Layer1(256), Layer2(512), Layer3(1024)]
         
         # Block 1: Input 512 | Skip f3 (1024) -> Out 256
         self.block1 = DecoderBlock_UNet(in_channels=512, out_channels=256, skip_channels=1024)
@@ -105,12 +98,11 @@ class ECGDecoder_UNet(nn.Module):
 
         # Final Conv: 16 channels -> 1 channel (ECG Signal)
         self.final_conv = nn.Conv1d(16, 1, kernel_size=1)
-        # LƯU Ý: ĐÃ BỎ SIGMOID ĐỂ OUTPUT GIÁ TRỊ THỰC
         self.final_activation = nn.Sigmoid()
 
     def forward(self, z, features_list):
-        # features_list từ Encoder phải theo thứ tự [f1, f2, f3] 
-        # f1: low-level (sớm nhất), f3: high-level (sâu nhất)
+        # features_list [f1, f2, f3] 
+        # f1: low-level, f3: high-level 
         f1, f2, f3 = features_list 
         
         x = self.adapter(z) 
@@ -129,26 +121,17 @@ class ECGDecoder_UNet(nn.Module):
 class PPGtoECGConverter(nn.Module):
     def __init__(self, output_embed_dim=2048):
         super().__init__()
-        # Giả sử bạn tái sử dụng class ResNet50_1D cho encoder
         self.encode_ppg = ResNet50_1D(layers=[3, 4, 6, 3], num_classes=output_embed_dim)
         
         self.ecg_decoder = ECGDecoder_UNet(bottleneck_channels=output_embed_dim)
 
     def forward(self, ppg_original):
         # 1. Encode PPG
-        # Encoder cần trả về cả embedding (z) và list các feature maps
         z_ppg, _, feature_lists_PPG = self.encode_ppg(ppg_original)
         
-        # Lưu ý: z_ppg từ ResNet thường là vector (Batch, 2048)
-        # Cần unsqueeze để thành (Batch, 2048, 1) hoặc reshape phù hợp cho Decoder
         if z_ppg.dim() == 2:
-            # ResNet GAP output -> cần restore spatial dim
-            # Nhưng ở đây Decoder cần input (B, 2048, 75).
-            # -> Bạn nên lấy feature map TRƯỚC Global Average Pooling của ResNet làm z
-            # Sửa lại output của ResNet50_1D để trả về feature map cuối cùng
             pass 
             
-        # 2. Decode sang ECG (Truyền cả feature list!)
         predicted_ecg = self.ecg_decoder(z_ppg, feature_lists_PPG)
         
         return predicted_ecg

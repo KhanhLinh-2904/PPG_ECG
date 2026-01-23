@@ -2,11 +2,11 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 #ECG Signal
-train_data_path = "datasets/total_min_max_train.npz"
-test_data_path = "datasets/total_min_max_test.npz"
+train_data_path = "datasets/total_record_mm_train.npz"
+test_data_path = "datasets/total_record_mm_test.npz"
 data_train = np.load(train_data_path, allow_pickle=True)
 data_test = np.load(test_data_path, allow_pickle=True)
-labels = data_test["labels"]
+labels = data_train["labels"]
 
 index_af = 0
 index_norm = 0

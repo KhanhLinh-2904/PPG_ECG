@@ -124,15 +124,13 @@ class SignalTransformer(nn.Module):
             x = x @ self.proj
         return x
 if __name__ == '__main__':
-    # Tham số mô phỏng
-    INPUT_LENGTH = 3750     # Chiều dài của tín hiệu PPG
-    PATCH_SIZE = 30        # Kích thước miếng vá 1D
-    EMBED_DIM = 512        # Chiều nhúng (width)
-    NUM_LAYERS = 6         # Số lớp Transformer
-    NUM_HEADS = 8          # Số lượng Multi-Head Attention
-    ECG_EMBED_DIM = 128    # Chiều của vector nhúng ECG đầu ra
+    INPUT_LENGTH = 3750    
+    PATCH_SIZE = 30        
+    EMBED_DIM = 512        
+    NUM_LAYERS = 6         
+    NUM_HEADS = 8          
+    ECG_EMBED_DIM = 128    
 
-    # Tạo mô hình
     model = SignalTransformer(
         input_length=INPUT_LENGTH,
         patch_size=PATCH_SIZE,
@@ -141,15 +139,10 @@ if __name__ == '__main__':
         heads=NUM_HEADS,
         output_dim=ECG_EMBED_DIM
     )
-    
-    # Tạo dữ liệu đầu vào mô phỏng (Batch size = 4)
-    # Tín hiệu PPG: [Batch, Channels=1, Length]
     dummy_ppg = torch.randn(4, 1, INPUT_LENGTH)
     
-    # Lan truyền thuận
     print(f"Shape of dummy PPG input: {dummy_ppg.shape}")
     output_ecg_features = model(dummy_ppg)
     
-    # Kết quả
     print(f"Shape of predicted ECG features output: {output_ecg_features.shape}")
     print(f"Expected shape: [4, 128] (Batch size, ECG Embedding Dimension)")
