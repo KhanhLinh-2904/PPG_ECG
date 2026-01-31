@@ -98,20 +98,20 @@ class SignalProcessor:
         cleaned_signal = np.where(spike_locations, smoothed_signal, signal)
         return cleaned_signal
     
-    def normalize_signal(self, signal_data: np.ndarray) -> np.ndarray:
-        min_val = np.min(signal_data)
-        max_val = np.max(signal_data)
-        if max_val - min_val < 1e-8:
-            return np.zeros_like(signal_data)
-        return (signal_data - min_val) / (max_val - min_val)
-
-
     # def normalize_signal(self, signal_data: np.ndarray) -> np.ndarray:
-    #     mean_val = np.mean(signal_data)
-    #     std_val = np.std(signal_data)
-    #     if std_val < 1e-8:
+    #     min_val = np.min(signal_data)
+    #     max_val = np.max(signal_data)
+    #     if max_val - min_val < 1e-8:
     #         return np.zeros_like(signal_data)
-    #     return (signal_data - mean_val) / std_val
+    #     return (signal_data - min_val) / (max_val - min_val)
+
+
+    def normalize_signal(self, signal_data: np.ndarray) -> np.ndarray:
+        mean_val = np.mean(signal_data)
+        std_val = np.std(signal_data)
+        if std_val < 1e-8:
+            return np.zeros_like(signal_data)
+        return (signal_data - mean_val) / std_val
     
     def align_signals_cross_correlation(self, ecg: np.ndarray, ppg: np.ndarray) -> Tuple[np.ndarray, int]:
         correlation = signal.correlate(ecg, ppg, mode="full")
@@ -368,8 +368,8 @@ def load_and_slice_all_signals(datapath: str, record_list: List[str]):
         # visualizer.visualize_sliding_record(record_name, ppg_preprocessed, ecg_preprocessed)
         # visualizer.visualize_specific_segment(record_name, ppg_preprocessed[:samples_to_plot], ecg_preprocessed[:samples_to_plot])
 
-
-        ppg_preprocessed = processor.align_signals_cross_correlation(ecg_preprocessed, ppg_preprocessed)[0]
+        # Aligment PPG and ECG
+        # ppg_preprocessed = processor.align_signals_cross_correlation(ecg_preprocessed, ppg_preprocessed)[0]
         # visualizer.visualize_sliding_record(record_name, ppg_preprocessed, ecg_preprocessed)
         # visualizer.visualize_sliding_record(record_name, ppg_preprocessed, ppg)
         # visualizer.visualize_specific_segment(record_name, ppg_preprocessed[:samples_to_plot], ecg_preprocessed[:samples_to_plot])

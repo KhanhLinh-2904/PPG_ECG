@@ -1,0 +1,56 @@
+import os
+import shutil
+
+# 1. Cấu hình đường dẫn
+input_file = 'output_names.txt'
+source_path = '/home/linhhima/datasets/mimic3_35/35'
+destination_path = '/home/linhhima/datasets/mimic3_35/matched_folders'
+
+# Tạo thư mục đích nếu chưa tồn tại
+if not os.path.exists(destination_path):
+    os.makedirs(destination_path)
+    print(f"Đã tạo thư mục đích: {destination_path}")
+
+# 2. Lấy danh sách tất cả các thư mục con trong source_path
+# Lưu vào dictionary với key là 5 ký tự cuối để tìm kiếm nhanh hơn
+try:
+    all_folders = [f for f in os.listdir(source_path) if os.path.isdir(os.path.join(source_path, f))]
+    folder_map = {f[-5:]: f for f in all_folders}
+except FileNotFoundError:
+    print(f"Lỗi: Không tìm thấy đường dẫn nguồn {source_path}")
+    exit()
+
+# 3. Đọc file output_names.txt và xử lý
+print("-" * 50)
+if not os.path.exists(input_file):
+    print(f"Lỗi: Không tìm thấy file {input_file}")
+else:
+    with open(input_file, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            
+            # Lấy 5 chữ số cuối của ID (ví dụ: p000773 -> 00773)
+            id_suffix = line[-5:]
+            
+            # So sánh với map các thư mục đã lấy ở bước 2
+            if id_suffix in folder_map:
+                full_folder_name = folder_map[id_suffix]
+                src_folder = os.path.join(source_path, full_folder_name)
+                dest_folder = os.path.join(destination_path, full_folder_name)
+                
+                # Thực hiện copy thư mục
+                try:
+                    if not os.path.exists(dest_folder):
+                        shutil.copytree(src_folder, dest_folder)
+                        print(f"Found & Copied: {line} -> {full_folder_name}")
+                    else:
+                        print(f"Skipped (Already exists): {full_folder_name}")
+                except Exception as e:
+                    print(f"Error copying {full_folder_name}: {e}")
+            else:
+                print(f"Not found: {line} (suffix: {id_suffix})")
+
+print("-" * 50)
+print("Hoàn tất quá trình xử lý.")

@@ -16,9 +16,9 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 BATCH_SIZE = 16 
 INPUT_LENGTH = 2400
 OUTPUT_EMBED_DIM = 128
-TEST_DATA_PATH = 'datasets/total_record_mm_test.npz' 
-CLIP_MODEL_PATH = "models/multitask_clip_best_model_total_record_mm.pth"
-DECODER_MODEL_PATH = "models/multitask_decoder_best_model_total_record_mm.pth"
+TEST_DATA_PATH = 'datasets/total_test.npz' 
+CLIP_MODEL_PATH = "multitask_clip_best_model.pth"
+DECODER_MODEL_PATH = "multitask_decoder_best_model.pth"
 
 def set_seed(seed):
     random.seed(seed)
@@ -88,21 +88,56 @@ def visualize_results(ppg, ecg_true, ecg_pred, sample_idx, record_name):
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
     plt.show()
 
-def run_visualization():
+def save_ecg_reconstruction(output_path = "AF_Detection/ecg_reconstructions.npz"):
     set_seed(SEED)
     model_clip, model_converter = load_models()
-    
+    all_predicted_ecgs = []
+    all_original_ppgs = []
+    all_labels = []
+    all_record_names = []
+
     try:
         test_dataset = LoadData(TEST_DATA_PATH)
         test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=True)
     except Exception as e:
         print(f"Error: {e}")
         return
-
-    seen_records = set()
+   
     print("Running inference for visualization...")
     with torch.no_grad():
-        for i, (ecg, ppg, labels, groupID, record_names) in enumerate(test_loader):
+        for i, (ecg, ppg, record_names, label, _) in enumerate(test_loader):
+            ppg_input = ppg.to(DEVICE).float().unsqueeze(1)
+            print("record name: ", record_names)
+            ppg_embedding, feature_lists_PPG = model_clip(None, ppg_input)
+            predicted_ecg = model_converter(ppg_embedding, feature_lists_PPG)
+            all_predicted_ecgs.append(predicted_ecg.squeeze(1).cpu().numpy())
+            all_original_ppgs.append(ppg.cpu().numpy())
+            all_labels.append(label.cpu().numpy())
+            all_record_names.append(record_names)
+    save_dict = {
+        "ecgs": np.concatenate(all_predicted_ecgs, axis=0),
+        "ppgs": np.concatenate(all_original_ppgs, axis=0),
+        "labels": np.concatenate(all_labels, axis=0),
+        "records": np.array(all_record_names, dtype=object) 
+    }
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    np.savez_compressed(output_path, **save_dict)
+
+def run_visualization():
+    set_seed(SEED)
+    model_clip, model_converter = load_models()
+    seen_records = set()
+
+    try:
+        test_dataset = LoadData(TEST_DATA_PATH)
+        test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=True)
+    except Exception as e:
+        print(f"Error: {e}")
+        return
+   
+    print("Running inference for visualization...")
+    with torch.no_grad():
+        for i, (ecg, ppg, record_names, _, _) in enumerate(test_loader):
             ppg_input = ppg.to(DEVICE).float().unsqueeze(1)
             
             ppg_embedding, feature_lists_PPG = model_clip(None, ppg_input)
@@ -135,7 +170,7 @@ def run_loss():
 
     print("Calculating Metrics...")
     with torch.no_grad():
-        for i, (ecg, ppg, labels, groupID, record_names) in enumerate(test_loader):
+        for i, (ecg, ppg, record_names,_,_) in enumerate(test_loader):
             ppg_input = ppg.to(DEVICE).float().unsqueeze(1)
             
             ppg_embedding, feature_lists_PPG = model_clip(None, ppg_input)
@@ -151,8 +186,8 @@ def run_loss():
                 rmse, pearson = calculate_metrics(true_s, pred_s)
                 dtw = calculate_dtw_distance(true_s, pred_s)
                 cosine = calculate_cosine_similarity(true_s, pred_s)
-                print("Record:", record_names[b])
-                print(f"  rRMSE: {rmse:.4f}, Pearson: {pearson:.4f}, DTW: {dtw:.4f}, Cosine: {cosine:.4f}")
+                # print("Record:", record_names[b])
+                # print(f"  rRMSE: {rmse:.4f}, Pearson: {pearson:.4f}, DTW: {dtw:.4f}, Cosine: {cosine:.4f}")
                 total_rmse += rmse
                 total_pearson += pearson
                 total_dtw += dtw
@@ -168,3 +203,4 @@ def run_loss():
 if __name__ == "__main__":
     run_visualization()
     # run_loss()
+    # save_ecg_reconstruction("AF_Detection/total_test_ecg_reconstructions_no_align.npz")
