@@ -15,7 +15,7 @@ import random
 # --- (CONSTANTS) ---
 SEED = 44
 INPUT_LENGTH = 2400
-NUM_EPOCHS = 500
+NUM_EPOCHS = 200
 LEARNING_RATE = 1e-4
 BATCH_SIZE = 64
 WEIGHT_CONTRASTIVE = 0.1
@@ -142,7 +142,7 @@ if __name__ == "__main__":
     print(f"Using device: {device}")
 
     print("Loading training dataset...")
-    train_dataset = LoadData('processed_data/mimic3_v1_no_align_train.npz') 
+    train_dataset = LoadData('processed_data/mimic3_v1_no_align_mm_train.npz') 
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True)
 
     model_clip = ECGEssembleCLIP(embed_dim=OUTPUT_EMBED_DIM).to(device)

@@ -8,9 +8,7 @@ import wfdb
 import matplotlib.pyplot as plt
 import time
 import random
-from sklearn.metrics.pairwise import cosine_similarity
-import networkx as nx
-from scipy.signal import correlate
+from collections import defaultdict
 # --- (CONSTANTS) ---
 SEED = 44
 PAUSE_TIME = 0.001
@@ -244,95 +242,6 @@ class DataVisualizer:
             plt.ioff() 
             print("Visualization hoàn tất.")
 
-def get_max_cross_correlation_score(x, y):
-    if np.std(x) == 0 or np.std(y) == 0:
-        return 0.0 
-    x_norm = (x - np.mean(x)) / (np.std(x) * len(x))
-    y_norm = (y - np.mean(y)) / np.std(y)
-    corr = correlate(x_norm, y_norm, mode='full')
-    return np.max(corr)
-
-def compute_similarity_matrix(ecg_array):
-    n_segments = ecg_array.shape[0]
-    sim_matrix = np.zeros((n_segments, n_segments))
-    
-    for i in range(n_segments):
-        for j in range(i, n_segments):
-            if i == j:
-                sim_matrix[i, j] = 1.0 
-            else:
-                score = get_max_cross_correlation_score(ecg_array[i], ecg_array[j])
-                sim_matrix[i, j] = score
-                sim_matrix[j, i] = score 
-    return sim_matrix
-
-
-def group_ecg_segment(record: Dict[str, List[Any]], threshold: float = 0.7) -> Dict[str, List[Any]]:
-    results: Dict[str, List[Any]] = {
-        "ppgs": [],
-        "ecgs": [],
-        "groupIDs": [],
-        "labels": [],
-        "records": []
-    }
-
-    ecg_segments = record.get("ecgs", [])
-    ppg_segments = record.get("ppgs", [])
-    record_names = record.get("records", [])
-    input_labels = record.get("labels", [])
-
-    if not ecg_segments:
-        return results
-
-    n_samples = len(ecg_segments)
-
-    ecg_array = np.array(ecg_segments)
-    
-    sim_matrix = compute_similarity_matrix(ecg_array)
-    
-    np.fill_diagonal(sim_matrix, 0)
-
-    # 2. Xây dựng đồ thị
-    adjacency_matrix = sim_matrix >= threshold
-    num_connections = np.sum(adjacency_matrix) / 2
-    print(f"Tổng số cạnh (kết nối >= {threshold}): {int(num_connections)}")
-    
-    G = nx.from_numpy_array(adjacency_matrix)
-
-    all_cliques = list(nx.find_cliques(G))
-    all_cliques.sort(key=len, reverse=True)
-
-    final_groups = []
-    seen_nodes = set()
-
-    for clique in all_cliques:
-        unique_members = [node for node in clique if node not in seen_nodes]
-        
-        if unique_members:
-            seen_nodes.update(unique_members)
-         
-            final_groups.append(unique_members)
-            
-            if len(unique_members) > 1:
-                print(f" (Size {len(unique_members)}): {unique_members}")
-
-    all_indices = set(range(n_samples))
-    leftovers = list(all_indices - seen_nodes)
-    
-    if leftovers:
-        for node in leftovers:
-            final_groups.append([node])
-
-    for group_id, group_indices in enumerate(final_groups):
-        for idx in group_indices:
-            results["groupIDs"].append(group_id)
-            results["ecgs"].append(ecg_segments[idx])
-            results["ppgs"].append(ppg_segments[idx])
-            results["labels"].append(input_labels[idx])
-            results["records"].append(record_names[idx])
-    return results
-
-
 def get_all_records(datapath: str) -> List[str]:
     if not os.path.exists(datapath):
         return []
@@ -381,20 +290,11 @@ def load_and_slice_all_signals(datapath: str, record_list: List[str]):
         if min_len < SLICE_LENGTH:
             continue
         start_idx = 0
-        prev_ppg = 0
-        prev_ecg = 0
         while start_idx + SLICE_LENGTH <= min_len:
            
             ppg_slice = ppg_preprocessed[start_idx:start_idx + SLICE_LENGTH]
             ecg_slice = ecg_preprocessed[start_idx:start_idx + SLICE_LENGTH]
-            if start_idx == 0:
-                prev_ppg = ppg_slice
-                prev_ecg = ecg_slice
-            else:
-                prev_ppg = record_ppgs[-1]
-                prev_ecg = record_ecgs[-1]
-            ppg_corr = get_max_cross_correlation_score(prev_ppg, ppg_slice)    
-            ecg_corr = get_max_cross_correlation_score(prev_ecg, ecg_slice)  
+             
            
             if np.isnan(ppg_slice).any() or np.isnan(ecg_slice).any():
                 start_idx += OVERLAP
@@ -407,162 +307,185 @@ def load_and_slice_all_signals(datapath: str, record_list: List[str]):
     print("Tổng số segments PPG sau khi cắt: ", len(record_ppgs))
     return record_ppgs, record_ecgs, record_names
 
-def split_segments_and_save_by_record(total_data: Dict[str, Any], save_prefix: str, ratios: Tuple[float, float]):
+def split_segments_and_save_by_record(total_data: Dict[str, Any], save_prefix: str, ratios: Tuple[float, float], seed: int = 42):
     os.makedirs("datasets", exist_ok=True)
-    
-    total_data = group_ecg_segment(total_data, threshold=0.9) 
-    
+    np.random.seed(seed)
+    random.seed(seed)
+
     all_records = np.array(total_data["records"])
-    all_group_ids = np.array(total_data["groupIDs"])
-
+    all_labels = np.array(total_data["labels"])
+    
+    # 1. Phân loại Record theo nhãn (Bản ghi nào là AF, bản ghi nào là Non-AF)
+    record_to_label = {}
     unique_records = np.unique(all_records)
-    n_records = len(unique_records)
     
-    print(f"\n--- THỐNG KÊ TỔNG QUÁT ---")
-    print(f"Tổng số lượng Records gốc: {n_records}")
+    for rec in unique_records:
+        # Lấy nhãn xuất hiện nhiều nhất trong bản ghi đó (thường là đồng nhất)
+        rec_labels = all_labels[all_records == rec]
+        most_frequent_label = np.bincount(rec_labels).argmax()
+        record_to_label[rec] = most_frequent_label
 
-    np.random.shuffle(unique_records)
-    
-    n_train_records = int(ratios[0] * n_records)
-    if n_train_records == n_records and n_records > 1:
-        n_train_records -= 1
-        
-    train_record_names = unique_records[:n_train_records]
-    test_record_names = unique_records[n_train_records:]
+    af_records = [r for r, l in record_to_label.items() if l == 1]
+    non_af_records = [r for r, l in record_to_label.items() if l == 0]
 
-    train_indices = np.where(np.isin(all_records, train_record_names))[0].tolist()
-    test_indices = np.where(np.isin(all_records, test_record_names))[0].tolist()
-    
-    def get_group_stats(indices):
-        groups_in_split = all_group_ids[indices]
-        u_ids, counts = np.unique(groups_in_split, return_counts=True)
-        n_singles = np.sum(counts == 1)
-        n_clusters = len(u_ids) - n_singles
-        return len(u_ids), n_clusters, n_singles
+    # 2. Shuffle và Chia 80/20 riêng biệt cho từng nhóm nhãn
+    np.random.shuffle(af_records)
+    np.random.shuffle(non_af_records)
 
-    n_groups_train, n_clusters_train, n_singles_train = get_group_stats(train_indices)
-    n_groups_test, n_clusters_test, n_singles_test = get_group_stats(test_indices)
+    def get_split_names(rec_list, ratio):
+        n_train = int(len(rec_list) * ratio)
+        return rec_list[:n_train], rec_list[n_train:]
 
-    print(f"\n--- CHI TIẾT PHÂN BỐ (Theo Record) ---")
-    print(f"TRAIN Set: {len(train_record_names)} records")
-    print(f"  └─ Tổng {n_groups_train} groups ({n_clusters_train} Clusters, {n_singles_train} Singles)")
-    
-    print(f"TEST Set: {len(test_record_names)} records")
-    print(f"  └─ Tổng {n_groups_test} groups ({n_clusters_test} Clusters, {n_singles_test} Singles)")
+    train_af, test_af = get_split_names(af_records, ratios[0])
+    train_non, test_non = get_split_names(non_af_records, ratios[0])
 
-    random.shuffle(train_indices)
-    random.shuffle(test_indices)
+    train_record_names = train_af + train_non
+    test_record_names = test_af + test_non
 
-    print(f"\n--- KẾT QUẢ SỐ LƯỢNG SEGMENTS ---")
-    print(f"Train: {len(train_indices)} segments")
-    print(f"Test:  {len(test_indices)} segments")
-
-    splits = {
-        "train": train_indices,
-        "test": test_indices
+    # 3. Gom Indices thô
+    raw_splits = {
+        "train": np.where(np.isin(all_records, train_record_names))[0].tolist(),
+        "test": np.where(np.isin(all_records, test_record_names))[0].tolist()
     }
-    
-    for split_name, current_indices in splits.items():
-        save_path = f"datasets/{save_prefix}_{split_name}.npz"
+    for split_name, indices in raw_splits.items():
+        split_labels = all_labels[indices]
+        af_idx = [idx for idx in indices if all_labels[idx] == 1]
+        non_af_idx = [idx for idx in indices if all_labels[idx] == 0]
         
-        if not current_indices:
-            print(f"⚠️ Tập {split_name} rỗng!")
+        target = min(len(af_idx), len(non_af_idx))
+        
+        if target == 0:
+            print(f"⚠️ Tập {split_name} không đủ dữ liệu để cân bằng!")
             continue
 
+        # Cân bằng theo tỷ lệ record đóng góp
+        if len(af_idx) > len(non_af_idx):
+            final_af = proportional_undersampling(indices, target, all_labels, all_records, 1)
+            final_non_af = non_af_idx
+        else:
+            final_non_af = proportional_undersampling(indices, target, all_labels, all_records, 0)
+            final_af = af_idx
+
+        final_indices = final_af + final_non_af
+        np.random.shuffle(final_indices)
+
+        # 5. Lưu dữ liệu
+        save_path = f"datasets/{save_prefix}_{split_name}.npz"
         save_dict = {
-            "ecgs": [total_data["ecgs"][i] for i in current_indices],
-            "ppgs": [total_data["ppgs"][i] for i in current_indices],
-            "groupIDs": [total_data["groupIDs"][i] for i in current_indices],
-            "labels": [total_data["labels"][i] for i in current_indices],
-            "records": [total_data["records"][i] for i in current_indices]
+            "ecgs": np.array([total_data["ecgs"][i] for i in final_indices]),
+            "labels": np.array([total_data["labels"][i] for i in final_indices]),
+            "records": np.array([total_data["records"][i] for i in final_indices])
         }
+        if "ppgs" in total_data:
+            save_dict["ppgs"] = np.array([total_data["ppgs"][i] for i in final_indices])
 
         np.savez(save_path, **save_dict)
-        print(f"→ Đã lưu {split_name.upper()}: {len(current_indices)} mẫu tại '{save_path}'")
+        print(f"→ Đã lưu {split_name.upper()}: {len(final_indices)} segments (AF: {len(final_af)}, Non-AF: {len(final_non_af)})")
 
-def split_segments_and_save(total_data: Dict[str, Any], save_prefix: str, ratios: Tuple[float, float]):
+
+def proportional_undersampling(indices: List[int], target_count: int, labels: np.ndarray, records: np.ndarray, label_to_balance: int) -> List[int]:
   
-    os.makedirs("datasets", exist_ok=True)
+    label_indices = [idx for idx in indices if labels[idx] == label_to_balance]
+    total_available = len(label_indices)
     
-    total_data = group_ecg_segment(total_data, threshold=0.9) 
-    all_group_ids = np.array(total_data["groupIDs"])
+    if total_available <= target_count:
+        return label_indices
 
-    unique_groups = np.unique(all_group_ids)
-    n_groups = len(unique_groups)
-    
-    print(f"\n--- THỐNG KÊ TỔNG QUÁT ---")
-    print(f"Tổng số lượng Group ID: {n_groups}")
+    record_groups = defaultdict(list)
+    for idx in label_indices:
+        record_groups[records[idx]].append(idx)
 
-    np.random.shuffle(unique_groups)
+    keep_indices = []
+    current_total = 0
     
-    n_train_groups = int(ratios[0] * n_groups)
-    
-    train_group_ids = unique_groups[:n_train_groups]
-    test_group_ids = unique_groups[n_train_groups:]
+    sorted_recs = sorted(record_groups.items(), key=lambda x: len(x[1]), reverse=True)
 
-    unique_ids_all, counts_all = np.unique(all_group_ids, return_counts=True)
-    
-    single_ids = unique_ids_all[counts_all == 1]
-   
-    n_singles_train = len(np.intersect1d(train_group_ids, single_ids))
-    n_clusters_train = len(train_group_ids) - n_singles_train
-    
-    n_singles_test = len(np.intersect1d(test_group_ids, single_ids))
-    n_clusters_test = len(test_group_ids) - n_singles_test
-    
-    print(f"\n--- CHI TIẾT PHÂN BỐ (Train/Test) ---")
-    print(f"TRAIN Set ({len(train_group_ids)} nhóm):")
-    print(f"  ✅ Clusters (>1 phần tử): {n_clusters_train} nhóm")
-    print(f"  ⚠️ Singles  (1 phần tử):  {n_singles_train} nhóm")
-    
-    print(f"TEST Set ({len(test_group_ids)} nhóm):")
-    print(f"  ✅ Clusters (>1 phần tử): {n_clusters_test} nhóm")
-    print(f"  ⚠️ Singles  (1 phần tử):  {n_singles_test} nhóm")
-
-    train_indices = np.where(np.isin(all_group_ids, train_group_ids))[0].tolist()
-    test_indices = np.where(np.isin(all_group_ids, test_group_ids))[0].tolist()
-    
-    random.shuffle(train_indices)
-    random.shuffle(test_indices)
-
-    print(f"\n--- KẾT QUẢ SỐ LƯỢNG SEGMENTS ---")
-    print(f"Train: {len(train_indices)} segments")
-    print(f"Test:  {len(test_indices)} segments")
-
-    splits = {
-        "train": train_indices,
-        "test": test_indices
-    }
-    
-    for split_name, current_indices in splits.items():
-        save_path = f"datasets/{save_prefix}_{split_name}.npz"
+    for i, (rec_id, idx_list) in enumerate(sorted_recs):
+        n_keep = int(round(len(idx_list) * (target_count / total_available)))
         
-        if not current_indices:
-            print(f"⚠️ Tập {split_name} rỗng!")
+        if i == len(sorted_recs) - 1:
+            n_keep = target_count - current_total
+        
+        n_keep = max(0, min(n_keep, len(idx_list)))
+        
+        if n_keep > 0:
+            chosen = np.random.choice(idx_list, n_keep, replace=False).tolist()
+            keep_indices.extend(chosen)
+            current_total += len(chosen)
+
+    if current_total < target_count:
+        remaining_needed = target_count - current_total
+        all_potential = [idx for sub in record_groups.values() for idx in sub]
+        leftovers = list(set(all_potential) - set(keep_indices))
+        if leftovers:
+            extra = np.random.choice(leftovers, min(len(leftovers), remaining_needed), replace=False).tolist()
+            keep_indices.extend(extra)
+
+    return keep_indices
+
+def split_segments_and_save(total_data: Dict[str, Any], save_prefix: str, ratios: Tuple[float, float] = (0.8, 0.2), seed: int = 42):
+    os.makedirs("datasets", exist_ok=True)
+    np.random.seed(seed)
+    
+    all_labels = np.array(total_data["labels"])
+    all_records = np.array(total_data["records"])
+
+    record_map = defaultdict(list)
+    for i, record_id in enumerate(all_records):
+        record_map[record_id].append(i)
+    
+    raw_indices = {"train": [], "test": []}
+    for record_id, indices in record_map.items():
+        indices.sort()
+        split_point = int(len(indices) * ratios[0])
+        raw_indices["train"].extend(indices[:split_point])
+        raw_indices["test"].extend(indices[split_point:])
+
+    #
+    for split_name, current_indices in raw_indices.items():
+        af_idx = [idx for idx in current_indices if all_labels[idx] == 1]
+        non_af_idx = [idx for idx in current_indices if all_labels[idx] == 0]
+        
+        target = min(len(af_idx), len(non_af_idx))
+        
+        if target == 0:
+            print(f"⚠️ Tập {split_name} không đủ dữ liệu cả 2 lớp!")
             continue
 
+        # Thực hiện Undersampling theo tỷ lệ cho lớp đa số
+        if len(af_idx) > len(non_af_idx):
+            final_af = proportional_undersampling(current_indices, target, all_labels, all_records, 1)
+            final_non_af = non_af_idx
+        else:
+            final_non_af = proportional_undersampling(current_indices, target, all_labels, all_records, 0)
+            final_af = af_idx
+
+        # Gộp lại và trộn ngẫu nhiên
+        final_combined = final_af + final_non_af
+        np.random.shuffle(final_combined)
+
+        # 3. Lưu dữ liệu .npz
+        save_path = f"datasets/{save_prefix}_{split_name}.npz"
         save_dict = {
-            "ecgs": [total_data["ecgs"][i] for i in current_indices],
-            "ppgs": [total_data["ppgs"][i] for i in current_indices],
-            "groupIDs": [total_data["groupIDs"][i] for i in current_indices],
-            "labels": [total_data["labels"][i] for i in current_indices],
-            "records": [total_data["records"][i] for i in current_indices]
+            "ecgs": np.array([total_data["ecgs"][i] for i in final_combined]),
+            "labels": np.array([total_data["labels"][i] for i in final_combined]),
+            "records": np.array([total_data["records"][i] for i in final_combined])
         }
+        
+        # Thêm PPGs nếu tồn tại trong dữ liệu gốc
+        if "ppgs" in total_data:
+            save_dict["ppgs"] = np.array([total_data["ppgs"][i] for i in final_combined])
 
         np.savez(save_path, **save_dict)
-        print(f"→ Đã lưu {split_name.upper()}: {len(current_indices)} mẫu tại '{save_path}'")
+        
+        print(f"✅ {split_name.upper()}: {len(final_combined)} mẫu (AF: {len(final_af)}, Non-AF: {len(final_non_af)})")
+        print(f"   Lưu tại '{save_path}'")
 
 if __name__ == "__main__":
     set_seed(SEED)
     datapath_non_af = "/home/linhhima/Pre_processing_data/Datasets/mimic_perform_non_af_wfdb" 
     datapath_af = "/home/linhhima/Pre_processing_data/Datasets/mimic_perform_af_wfdb"
-    # all_records = get_all_records(datapath)
-   
-    # records_sample = ['mimic_perform_non_af_001', 'mimic_perform_non_af_002', 'mimic_perform_non_af_003', 
-    #                   'mimic_perform_non_af_007', 'mimic_perform_non_af_009', 'mimic_perform_non_af_015',
-    #                   'mimic_perform_non_af_005', 'mimic_perform_non_af_013', 'mimic_perform_non_af_016']
-    # records_sample = ['mimic_perform_non_af_002']
-    # records_sample = ['mimic_perform_non_af_001', 'mimic_perform_non_af_002', 'mimic_perform_non_af_013', 'mimic_perform_non_af_016']
+
     records_sample_non_af = ['mimic_perform_non_af_001', 'mimic_perform_non_af_002',
                     'mimic_perform_non_af_003', 
                     'mimic_perform_non_af_005',
@@ -572,26 +495,14 @@ if __name__ == "__main__":
                     'mimic_perform_non_af_013', 
                      'mimic_perform_non_af_016']
 
-    records_sample_af = ['mimic_perform_af_001', 
+    records_sample_af = ['mimic_perform_af_001', 'mimic_perform_af_002',
                     'mimic_perform_af_003', 'mimic_perform_af_004',
-                     'mimic_perform_af_006',
-                    'mimic_perform_af_007', 'mimic_perform_af_008',
-                    'mimic_perform_af_009', 'mimic_perform_af_010',
-                    'mimic_perform_af_011', 'mimic_perform_af_012',
-                    'mimic_perform_af_013',
+                     'mimic_perform_af_012',
+                    'mimic_perform_af_014',
                     'mimic_perform_af_015', 'mimic_perform_af_016',
-                    'mimic_perform_af_017', 'mimic_perform_af_018',
+                     'mimic_perform_af_018',
                     'mimic_perform_af_019'
                     ]
-    # records_sample = ['mimic_perform_af_001', 'mimic_perform_af_002',
-    #                 'mimic_perform_af_003', 'mimic_perform_af_004',
-    #                 'mimic_perform_af_010',
-    #                  'mimic_perform_af_012',
-    #                 'mimic_perform_af_014',
-    #                 'mimic_perform_af_015', 'mimic_perform_af_016',
-    #                  'mimic_perform_af_018',
-    #                 'mimic_perform_af_019'
-    #                 ]
     non_af_data_ppg, non_af_data_ecg, non_af_records = load_and_slice_all_signals(datapath_non_af, records_sample_non_af)
     af_data_ppg, af_data_ecg, af_records = load_and_slice_all_signals(datapath_af, records_sample_af)
 
@@ -608,8 +519,7 @@ if __name__ == "__main__":
         "ppgs": all_ppgs,
         "ecgs": all_ecgs,
         "labels": all_labels,    
-        "records": all_records,
-        "groupIDs": [],          
+        "records": all_records        
     }
 
     print(f"Tổng số segments Non-AF: {len(non_af_data_ppg)}")
@@ -617,6 +527,6 @@ if __name__ == "__main__":
     print(f"Tổng cộng dữ liệu sau hợp nhất: {len(total_data['ppgs'])}")
     # split_segments_and_save(total_data, save_prefix="normal_remove24", ratios=(0.8, 0.2))
     # split_segments_and_save_by_record(total_data, save_prefix="record", ratios=(0.8, 0.2))
-    # split_segments_and_save(total_data, save_prefix="total_min_max", ratios=(0.8, 0.2))
-    split_segments_and_save_by_record(total_data, save_prefix="total_record_mm", ratios=(0.8, 0.2))
+    split_segments_and_save(total_data, save_prefix="total_no_z", ratios=(0.8, 0.2))
+    # split_segments_and_save_by_record(total_data, save_prefix="total_record_mm", ratios=(0.8, 0.2))
 

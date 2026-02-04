@@ -7,7 +7,6 @@ class LoadData(Dataset):
         self.ppgs = data["ppgs"]
         self.ecgs = data["ecgs"]
         self.labels = data["labels"]
-        self.group_id = data["groupIDs"]
         self.record = data["records"]
 
     def __len__(self):
@@ -17,10 +16,8 @@ class LoadData(Dataset):
         ppg = torch.tensor(self.ppgs[idx], dtype=torch.float32)
         ecg = torch.tensor(self.ecgs[idx], dtype=torch.float32)
         label = torch.tensor(self.labels[idx], dtype=torch.long)  
-        group_id = torch.tensor(self.group_id[idx], dtype=torch.long)  
         record_name = str(self.record[idx])
-        # return ecg, ppg, record_name, label
-        return ecg, ppg, record_name, label, group_id
+        return ecg, ppg, record_name, label
         # return ecg, ppg, record_name
 
     

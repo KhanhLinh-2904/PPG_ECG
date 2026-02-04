@@ -9,7 +9,7 @@ from sklearn.metrics import precision_recall_curve, average_precision_score
 
 # ----------- Configuration -----------
 CHECKPOINT_PATH = "AF_Detection/checkpoints_z/best_model.pth"
-TEST_DATA_PATH = "AF_Detection/detect_af_MIMIC_test_recon_no_align.npz"
+TEST_DATA_PATH = "AF_Detection/detect_af_MIMIC_test_recon_no_mm.npz"
 BATCH_SIZE = 32
 
 # ----------- Load Test Data -----------

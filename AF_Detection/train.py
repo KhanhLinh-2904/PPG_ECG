@@ -67,9 +67,10 @@ def train_model(train_loader, epochs, model, criterion, optimizer):
         # Lưu model tốt nhất dựa trên Train Accuracy
         if train_acc > best_train_acc:
             best_train_acc = train_acc
+            epoch_best = epoch + 1
             torch.save(model.state_dict(), best_model_path)
 
-    print(f"\nKết thúc! Model tốt nhất đạt {best_train_acc:.2f}% Train Accuracy.")
+    print(f"\nKết thúc! Model tốt nhất đạt {best_train_acc:.2f}% Train Accuracy tại epoch {epoch_best}.")
     return train_losses, train_accuracies
 
 
@@ -101,7 +102,7 @@ def plot_metrics(train_losses, train_accs):
 if __name__ == "__main__":
     set_seed(42)
     # 1. Load dữ liệu training
-    train_data = np.load('AF_Detection/detect_af_MIMIC_train.npz')
+    train_data = np.load('AF_Detection/detect_af_MIMIC_train_mm.npz')
     # Lưu ý: Chỉnh sửa key 'X', 'y' cho đúng với file .npz của bạn
     X_train = torch.tensor(train_data['X'], dtype=torch.float32)
     y_train = torch.tensor(train_data['y'], dtype=torch.long)

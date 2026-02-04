@@ -140,4 +140,4 @@ if __name__ == "__main__":
         "ecgs": record_ecgs,
         "records": record_names,
     }
-    split_segments_and_save_by_record(total_data, "mimic3_v1_no_align", (0.8, 0.2))
+    split_segments_and_save_by_record(total_data, "mimic3_v1_no_align_mm", (0.8, 0.2))

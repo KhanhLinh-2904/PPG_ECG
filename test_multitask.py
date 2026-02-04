@@ -16,9 +16,9 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 BATCH_SIZE = 16 
 INPUT_LENGTH = 2400
 OUTPUT_EMBED_DIM = 128
-TEST_DATA_PATH = 'datasets/total_test.npz' 
-CLIP_MODEL_PATH = "multitask_clip_best_model.pth"
-DECODER_MODEL_PATH = "multitask_decoder_best_model.pth"
+TEST_DATA_PATH = 'datasets/total_mm_test.npz' 
+CLIP_MODEL_PATH = "multitask_clip_best_model_mimic_mm.pth"
+DECODER_MODEL_PATH = "multitask_decoder_best_model_mimic_mm.pth"
 
 def set_seed(seed):
     random.seed(seed)
@@ -105,7 +105,7 @@ def save_ecg_reconstruction(output_path = "AF_Detection/ecg_reconstructions.npz"
    
     print("Running inference for visualization...")
     with torch.no_grad():
-        for i, (ecg, ppg, record_names, label, _) in enumerate(test_loader):
+        for i, (ecg, ppg, record_names, label) in enumerate(test_loader):
             ppg_input = ppg.to(DEVICE).float().unsqueeze(1)
             print("record name: ", record_names)
             ppg_embedding, feature_lists_PPG = model_clip(None, ppg_input)
@@ -137,7 +137,7 @@ def run_visualization():
    
     print("Running inference for visualization...")
     with torch.no_grad():
-        for i, (ecg, ppg, record_names, _, _) in enumerate(test_loader):
+        for i, (ecg, ppg, record_names, label) in enumerate(test_loader):
             ppg_input = ppg.to(DEVICE).float().unsqueeze(1)
             
             ppg_embedding, feature_lists_PPG = model_clip(None, ppg_input)
@@ -170,7 +170,7 @@ def run_loss():
 
     print("Calculating Metrics...")
     with torch.no_grad():
-        for i, (ecg, ppg, record_names,_,_) in enumerate(test_loader):
+        for i, (ecg, ppg, record_names) in enumerate(test_loader):
             ppg_input = ppg.to(DEVICE).float().unsqueeze(1)
             
             ppg_embedding, feature_lists_PPG = model_clip(None, ppg_input)
@@ -203,4 +203,4 @@ def run_loss():
 if __name__ == "__main__":
     run_visualization()
     # run_loss()
-    # save_ecg_reconstruction("AF_Detection/total_test_ecg_reconstructions_no_align.npz")
+    # save_ecg_reconstruction("AF_Detection/total_test_ecg_reconstructions_no_mm.npz")
