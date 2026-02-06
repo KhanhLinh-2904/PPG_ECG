@@ -1,5 +1,5 @@
 from CLIP import ECGDecoder_UNet, ECGEssembleCLIP
-from Kullback import FastSoftCLIPLoss
+from loss import FastSoftCLIPLoss
 import torch
 from torch.utils.data import DataLoader
 from load_data import LoadData
@@ -10,6 +10,8 @@ import time
 import matplotlib.pyplot as plt
 import numpy as np
 import random
+
+from utils import detect_ecg_features
 
 
 # --- (CONSTANTS) ---
@@ -22,7 +24,7 @@ WEIGHT_CONTRASTIVE = 0.1
 WEIGHT_L1 = 1.0      
 WEIGHT_PEARSON = 0.5  
 OUTPUT_EMBED_DIM = 128
-
+frequency = 125
 def set_seed(seed):
     random.seed(seed)
     np.random.seed(seed)
@@ -71,15 +73,12 @@ def train_epoch_combined(
     model_clip, model_converter, dataloader, optimizer, 
     contrast_loss_fn, mse_loss_fn, pearson_loss_fn, 
     device, scaler,
-    loss_weight_contrastive=1.0, loss_weight_mse=1.0, loss_weight_pearson=0.5 # Thêm tham số trọng số
+    loss_weights={'contrast': 1.0, 'mse': 1.0, 'pearson': 0.5, 'sample': 1.0} # Thêm tham số trọng số
 ):
     model_clip.train()
     model_converter.train()
     
-    total_loss_all = 0
-    total_loss_contrast = 0
-    total_loss_mse = 0
-    total_loss_pearson = 0 
+    metrics = {k: 0.0 for k in ['total', 'contrast', 'mse', 'pearson', 'sample']}
 
     progress_bar = tqdm(dataloader, desc="Training (Multi-task)", unit="batch")
     
@@ -96,45 +95,68 @@ def train_epoch_combined(
             
             # --- 2. (Reconstruction Task) ---
             predicted_ecg = model_converter(ppg_embedding, feature_lists_PPG) 
-            
+
             #  MSE Loss
             m_loss = mse_loss_fn(predicted_ecg, ecg_target)
 
             # Pearson Loss
             p_loss = pearson_loss_fn(predicted_ecg, ecg_target)
+            # Extrema Loss ---
+            batch_size = ecg_target.shape[0]
+            seq_len = ecg_target.shape[2]
+            r_mask = torch.zeros_like(ecg_target) 
+            o_mask = torch.zeros_like(ecg_target) 
+            
+    
+            ecg_np = ecg_target.detach().cpu().numpy() 
+            for i in range(batch_size):
+                signal_i = ecg_np[i].flatten()
+                r_idx, o_idx = detect_ecg_features(signal_i, frequency)
+                if len(r_idx) > 0:
+                    r_mask[i, 0, r_idx] = 1.0
+                if len(o_idx) > 0:
+                    o_mask[i, 0, o_idx] = 1.0
 
-            # --- 3. (Weighted Sum) ---
-            weighted_c_loss = loss_weight_contrastive * c_loss
-            weighted_m_loss = loss_weight_mse * m_loss
-            weighted_p_loss = loss_weight_pearson * p_loss
+            r_mask = r_mask.to(device)
+            o_mask = o_mask.to(device)
 
-            total_loss = weighted_c_loss + weighted_m_loss + weighted_p_loss
+            r_count = torch.sum(r_mask).clamp(min=1)
+            o_count = torch.sum(o_mask).clamp(min=1)
+            
+            loss_peak = torch.nn.functional.mse_loss(predicted_ecg * r_mask, ecg_target * r_mask, reduction='sum')
+            loss_valley = torch.nn.functional.mse_loss(predicted_ecg * o_mask, ecg_target * o_mask, reduction='sum')
+            
+            # s_loss = (loss_peak / r_count) + (loss_valley / o_count)
+            s_loss = (loss_peak / r_count) 
 
+            total_loss = (loss_weights['contrast'] * c_loss + 
+                          loss_weights['mse'] * m_loss + 
+                          loss_weights['pearson'] * p_loss + 
+                          loss_weights['sample'] * s_loss)
 
         
         scaler.scale(total_loss).backward()
         scaler.step(optimizer)
         scaler.update()
 
-        total_loss_all += total_loss.item()
-        total_loss_contrast += weighted_c_loss.item()
-        total_loss_mse += weighted_m_loss.item()
-        total_loss_pearson += weighted_p_loss.item()
+        metrics['total'] += total_loss.item()
+        metrics['contrast'] += c_loss.item() * loss_weights['contrast']
+        metrics['mse'] += m_loss.item() * loss_weights['mse']
+        metrics['pearson'] += p_loss.item() * loss_weights['pearson']
+        metrics['sample'] += s_loss.item() * loss_weights['sample']
 
         progress_bar.set_postfix({
             'Total': f"{total_loss.item():.4f}", 
-            'Con': f"{weighted_c_loss.item():.4f}",
-            'MSE': f"{weighted_m_loss.item():.4f}",
-            'Pears': f"{weighted_p_loss.item():.4f}"
+            'Con': f"{c_loss.item():.4f}",
+            'MSE': f"{m_loss.item():.4f}",
+            'Pears': f"{p_loss.item():.4f}",
+            'Sample': f"{s_loss.item():.4f}"
         })
 
     torch.cuda.empty_cache()
-    
-    avg_loss_all = total_loss_all / len(dataloader)
-    avg_loss_contrast = total_loss_contrast / len(dataloader)
-    avg_loss_mse = total_loss_mse / len(dataloader)
-    avg_loss_pearson = total_loss_pearson / len(dataloader)
-    return avg_loss_all, avg_loss_contrast, avg_loss_mse, avg_loss_pearson
+    num_batches = len(dataloader)
+    avg_losses = {k: v / num_batches for k, v in metrics.items()}
+    return avg_losses['total'], avg_losses['contrast'], avg_losses['mse'], avg_losses['pearson'], avg_losses['sample']
 
 if __name__ == "__main__":
     set_seed(SEED)
@@ -142,7 +164,7 @@ if __name__ == "__main__":
     print(f"Using device: {device}")
 
     print("Loading training dataset...")
-    train_dataset = LoadData('processed_data/mimic3_v1_no_align_mm_train.npz') 
+    train_dataset = LoadData('processed_data/mimic3_v1_train.npz') 
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True)
 
     model_clip = ECGEssembleCLIP(embed_dim=OUTPUT_EMBED_DIM).to(device)
@@ -154,6 +176,13 @@ if __name__ == "__main__":
     params_to_optimize = list(model_clip.parameters()) + list(model_converter.parameters())
     optimizer = AdamW(params_to_optimize, lr=LEARNING_RATE, weight_decay=1e-4)
 
+    loss_weights = {
+        'contrast': WEIGHT_CONTRASTIVE, 
+        'mse': WEIGHT_L1, 
+        'pearson': WEIGHT_PEARSON,
+        'sample': 1.0  # Trọng số cho Extrema Loss (Peak/Valley)
+    }
+
     scaler = GradScaler()
     best_loss = float('inf')
     
@@ -161,27 +190,26 @@ if __name__ == "__main__":
         'Total Loss': [],
         'Contrastive Loss': [],
         'MSE Loss': [],
-        'Pearson Loss': []
+        'Pearson Loss': [],
+        'Sample Loss': []
     }
 
     # ---- TRAINING ---
     for epoch in range(1, NUM_EPOCHS + 1):
         start = time.time()
 
-        train_loss, train_contrast, train_mse, train_pearson = train_epoch_combined(
+        train_loss, train_contrast, train_mse, train_pearson, train_sample = train_epoch_combined(
             model_clip, model_converter, train_loader, optimizer,
             contrast_loss, mse_loss, pearson_loss, 
             device, scaler,
-            loss_weight_contrastive=WEIGHT_CONTRASTIVE, 
-            loss_weight_mse=WEIGHT_L1,
-            loss_weight_pearson=WEIGHT_PEARSON 
+            loss_weights
         )
         
         history['Total Loss'].append(train_loss)
         history['Contrastive Loss'].append(train_contrast)
         history['MSE Loss'].append(train_mse)
         history['Pearson Loss'].append(train_pearson)
-
+        history['Sample Loss'].append(train_sample)
         print(f"\nEpoch {epoch}/{NUM_EPOCHS}")
 
         if train_loss < best_loss:

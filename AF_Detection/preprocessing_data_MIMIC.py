@@ -137,8 +137,8 @@ def load_data_and_extract_features(datapath="datasets/total_train.npz", output_n
 if __name__ == "__main__":
     set_seed(42)
     load_data_and_extract_features(
-        datapath="AF_Detection/total_test_ecg_reconstructions_no_mm.npz",
-        output_name="AF_Detection/detect_af_MIMIC_test_recon_no_mm.npz"
+        datapath="datasets/total_z_test.npz",
+        output_name="AF_Detection/detect_af_MIMIC_z_test.npz"
     )
     
     

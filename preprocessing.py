@@ -278,7 +278,7 @@ def load_and_slice_all_signals(datapath: str, record_list: List[str]):
         # visualizer.visualize_specific_segment(record_name, ppg_preprocessed[:samples_to_plot], ecg_preprocessed[:samples_to_plot])
 
         # Aligment PPG and ECG
-        # ppg_preprocessed = processor.align_signals_cross_correlation(ecg_preprocessed, ppg_preprocessed)[0]
+        ppg_preprocessed = processor.align_signals_cross_correlation(ecg_preprocessed, ppg_preprocessed)[0]
         # visualizer.visualize_sliding_record(record_name, ppg_preprocessed, ecg_preprocessed)
         # visualizer.visualize_sliding_record(record_name, ppg_preprocessed, ppg)
         # visualizer.visualize_specific_segment(record_name, ppg_preprocessed[:samples_to_plot], ecg_preprocessed[:samples_to_plot])
@@ -298,12 +298,14 @@ def load_and_slice_all_signals(datapath: str, record_list: List[str]):
            
             if np.isnan(ppg_slice).any() or np.isnan(ecg_slice).any():
                 start_idx += OVERLAP
+                print("Found NaN values, skipping this segment.")
                 continue
 
             record_ppgs.append(ppg_slice)
             record_ecgs.append(ecg_slice)
             record_names.append(record_name)
             start_idx += OVERLAP
+        print("Number of segments extracted from this record: ", len(record_ppgs))
     print("Tổng số segments PPG sau khi cắt: ", len(record_ppgs))
     return record_ppgs, record_ecgs, record_names
 
@@ -360,10 +362,10 @@ def split_segments_and_save_by_record(total_data: Dict[str, Any], save_prefix: s
 
         # Cân bằng theo tỷ lệ record đóng góp
         if len(af_idx) > len(non_af_idx):
-            final_af = proportional_undersampling(indices, target, all_labels, all_records, 1)
+            final_af = inverse_proportional_sampling(indices, target, all_labels, all_records, 1)
             final_non_af = non_af_idx
         else:
-            final_non_af = proportional_undersampling(indices, target, all_labels, all_records, 0)
+            final_non_af = inverse_proportional_sampling(indices, target, all_labels, all_records, 0)
             final_af = af_idx
 
         final_indices = final_af + final_non_af
@@ -382,46 +384,48 @@ def split_segments_and_save_by_record(total_data: Dict[str, Any], save_prefix: s
         np.savez(save_path, **save_dict)
         print(f"→ Đã lưu {split_name.upper()}: {len(final_indices)} segments (AF: {len(final_af)}, Non-AF: {len(final_non_af)})")
 
-
-def proportional_undersampling(indices: List[int], target_count: int, labels: np.ndarray, records: np.ndarray, label_to_balance: int) -> List[int]:
-  
-    label_indices = [idx for idx in indices if labels[idx] == label_to_balance]
-    total_available = len(label_indices)
-    
-    if total_available <= target_count:
-        return label_indices
-
+def inverse_proportional_sampling(indices, target_count, records, label_indices):
+   
     record_groups = defaultdict(list)
     for idx in label_indices:
         record_groups[records[idx]].append(idx)
-
-    keep_indices = []
-    current_total = 0
     
-    sorted_recs = sorted(record_groups.items(), key=lambda x: len(x[1]), reverse=True)
+    rec_ids = list(record_groups.keys())
+    counts = np.array([len(record_groups[rid]) for rid in rec_ids])
+    
+    counts = np.maximum(counts, 1)
 
-    for i, (rec_id, idx_list) in enumerate(sorted_recs):
-        n_keep = int(round(len(idx_list) * (target_count / total_available)))
+    inverse_counts = 1.0 / counts
+    weights = inverse_counts / np.sum(inverse_counts)
+    
+    keep_counts = np.round(weights * target_count).astype(int)
+    
+    final_keep_indices = []
+    
+    for i, rid in enumerate(rec_ids):
+        available = record_groups[rid]
+        n_to_pick = min(len(available), keep_counts[i])
         
-        if i == len(sorted_recs) - 1:
-            n_keep = target_count - current_total
-        
-        n_keep = max(0, min(n_keep, len(idx_list)))
-        
-        if n_keep > 0:
-            chosen = np.random.choice(idx_list, n_keep, replace=False).tolist()
-            keep_indices.extend(chosen)
-            current_total += len(chosen)
+        if n_to_pick > 0:
+            chosen = np.random.choice(available, n_to_pick, replace=False).tolist()
+            final_keep_indices.extend(chosen)
 
+    current_total = len(final_keep_indices)
+    
     if current_total < target_count:
         remaining_needed = target_count - current_total
-        all_potential = [idx for sub in record_groups.values() for idx in sub]
-        leftovers = list(set(all_potential) - set(keep_indices))
+        all_potential = [idx for rid in rec_ids for idx in record_groups[rid]]
+        leftovers = list(set(all_potential) - set(final_keep_indices))
+        
         if leftovers:
             extra = np.random.choice(leftovers, min(len(leftovers), remaining_needed), replace=False).tolist()
-            keep_indices.extend(extra)
+            final_keep_indices.extend(extra)
+            
+    elif current_total > target_count:
+        excess = current_total - target_count
+        final_keep_indices = np.random.choice(final_keep_indices, target_count, replace=False).tolist()
 
-    return keep_indices
+    return final_keep_indices
 
 def split_segments_and_save(total_data: Dict[str, Any], save_prefix: str, ratios: Tuple[float, float] = (0.8, 0.2), seed: int = 42):
     os.makedirs("datasets", exist_ok=True)
@@ -452,12 +456,25 @@ def split_segments_and_save(total_data: Dict[str, Any], save_prefix: str, ratios
             print(f"⚠️ Tập {split_name} không đủ dữ liệu cả 2 lớp!")
             continue
 
-        # Thực hiện Undersampling theo tỷ lệ cho lớp đa số
+        # # Thực hiện Undersampling theo tỷ lệ cho lớp đa số
+        # if len(af_idx) > len(non_af_idx):
+        #     final_af = inverse_proportional_sampling(current_indices, target, all_labels, all_records, 1)
+        #     final_non_af = non_af_idx
+        # else:
+        #     final_non_af = inverse_proportional_sampling(current_indices, target, all_labels, all_records, 0)
+        #     final_af = af_idx
+
         if len(af_idx) > len(non_af_idx):
-            final_af = proportional_undersampling(current_indices, target, all_labels, all_records, 1)
+            # AF là lớp đa số -> Rút gọn AF dựa trên Record
+            print(f"Undersampling AF class from {len(af_idx)} to {len(non_af_idx)}...")
+            target = len(non_af_idx)
+            final_af = inverse_proportional_sampling(current_indices, target, all_records, af_idx)
             final_non_af = non_af_idx
         else:
-            final_non_af = proportional_undersampling(current_indices, target, all_labels, all_records, 0)
+            # Non-AF là lớp đa số -> Rút gọn Non-AF dựa trên Record
+            print(f"Undersampling Non-AF class from {len(non_af_idx)} to {len(af_idx)}...")
+            target = len(af_idx)
+            final_non_af = inverse_proportional_sampling(current_indices, target, all_records, non_af_idx)
             final_af = af_idx
 
         # Gộp lại và trộn ngẫu nhiên
@@ -527,6 +544,6 @@ if __name__ == "__main__":
     print(f"Tổng cộng dữ liệu sau hợp nhất: {len(total_data['ppgs'])}")
     # split_segments_and_save(total_data, save_prefix="normal_remove24", ratios=(0.8, 0.2))
     # split_segments_and_save_by_record(total_data, save_prefix="record", ratios=(0.8, 0.2))
-    split_segments_and_save(total_data, save_prefix="total_no_z", ratios=(0.8, 0.2))
+    split_segments_and_save(total_data, save_prefix="total_z", ratios=(0.8, 0.2))
     # split_segments_and_save_by_record(total_data, save_prefix="total_record_mm", ratios=(0.8, 0.2))
 

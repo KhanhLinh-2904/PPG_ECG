@@ -16,9 +16,9 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 BATCH_SIZE = 16 
 INPUT_LENGTH = 2400
 OUTPUT_EMBED_DIM = 128
-TEST_DATA_PATH = 'datasets/total_mm_test.npz' 
-CLIP_MODEL_PATH = "multitask_clip_best_model_mimic_mm.pth"
-DECODER_MODEL_PATH = "multitask_decoder_best_model_mimic_mm.pth"
+TEST_DATA_PATH = 'processed_data/mimic3_v1_test.npz' 
+CLIP_MODEL_PATH = "multitask_clip_best_model.pth"
+DECODER_MODEL_PATH = "multitask_decoder_best_model.pth"
 
 def set_seed(seed):
     random.seed(seed)
@@ -137,7 +137,7 @@ def run_visualization():
    
     print("Running inference for visualization...")
     with torch.no_grad():
-        for i, (ecg, ppg, record_names, label) in enumerate(test_loader):
+        for i, (ecg, ppg, record_names) in enumerate(test_loader):
             ppg_input = ppg.to(DEVICE).float().unsqueeze(1)
             
             ppg_embedding, feature_lists_PPG = model_clip(None, ppg_input)
@@ -201,6 +201,6 @@ def run_loss():
     print(f"Cosine: {total_cosine/total_samples:.4f}")
 
 if __name__ == "__main__":
-    run_visualization()
-    # run_loss()
+    # run_visualization()
+    run_loss()
     # save_ecg_reconstruction("AF_Detection/total_test_ecg_reconstructions_no_mm.npz")

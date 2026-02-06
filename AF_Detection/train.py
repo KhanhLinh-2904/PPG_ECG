@@ -102,7 +102,7 @@ def plot_metrics(train_losses, train_accs):
 if __name__ == "__main__":
     set_seed(42)
     # 1. Load dữ liệu training
-    train_data = np.load('AF_Detection/detect_af_MIMIC_train_mm.npz')
+    train_data = np.load('AF_Detection/detect_af_MIMIC_z_train.npz')
     # Lưu ý: Chỉnh sửa key 'X', 'y' cho đúng với file .npz của bạn
     X_train = torch.tensor(train_data['X'], dtype=torch.float32)
     y_train = torch.tensor(train_data['y'], dtype=torch.long)
