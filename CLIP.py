@@ -42,6 +42,83 @@ class ECGEssembleCLIP(nn.Module):
             
             return logits_per_original, featured_PPG, feature_lists_PPG
 
+# class AttentionGate1D(nn.Module):
+#     def __init__(self, g_channels, x_channels, inter_channels):
+#         super().__init__()
+
+#         self.W_g = nn.Sequential(
+#             nn.Conv1d(g_channels, inter_channels, kernel_size=1, bias=False),
+#             nn.BatchNorm1d(inter_channels)
+#         )
+
+#         self.W_x = nn.Sequential(
+#             nn.Conv1d(x_channels, inter_channels, kernel_size=1, bias=False),
+#             nn.BatchNorm1d(inter_channels)
+#         )
+
+#         self.psi = nn.Sequential(
+#             nn.Conv1d(inter_channels, 1, kernel_size=1, bias=True),
+#             nn.Sigmoid()
+#         )
+
+#         self.relu = nn.ReLU(inplace=True)
+
+#     def forward(self, g, x):
+#         """
+#         g: decoder feature (after upsample)
+#         x: encoder skip feature
+#         """
+
+#         if g.size(-1) != x.size(-1):
+#             g = nn.functional.interpolate(g, size=x.size(-1), mode='linear', align_corners=False)
+
+#         g1 = self.W_g(g)
+#         x1 = self.W_x(x)
+
+#         psi = self.relu(g1 + x1)
+#         psi = self.psi(psi)
+
+#         return x * psi
+# class DecoderBlock_UNet(nn.Module):
+#     def __init__(self, in_channels, out_channels, skip_channels=0, scale_factor=2):
+#         super().__init__()
+
+#         self.upsample = nn.Upsample(scale_factor=scale_factor, mode='linear', align_corners=False)
+
+#         self.use_skip = skip_channels > 0
+
+#         if self.use_skip:
+#             self.attention = AttentionGate1D(
+#                 g_channels=in_channels,
+#                 x_channels=skip_channels,
+#                 inter_channels=out_channels
+#             )
+#             total_in = in_channels + skip_channels
+#         else:
+#             total_in = in_channels
+
+#         self.conv = nn.Sequential(
+#             nn.Conv1d(total_in, out_channels, kernel_size=3, padding=1, bias=False),
+#             nn.BatchNorm1d(out_channels),
+#             nn.ReLU(inplace=True),
+
+#             nn.Conv1d(out_channels, out_channels, kernel_size=3, padding=1, bias=False),
+#             nn.BatchNorm1d(out_channels),
+#             nn.ReLU(inplace=True)
+#         )
+
+#     def forward(self, x, skip=None):
+#         x = self.upsample(x)
+
+#         if self.use_skip and skip is not None:
+#             if x.size(-1) != skip.size(-1):
+#                 x = nn.functional.interpolate(x, size=skip.size(-1), mode='linear', align_corners=False)
+
+#             skip = self.attention(x, skip)  # 🔥 attention applied here
+#             x = torch.cat([x, skip], dim=1)
+
+#         return self.conv(x)
+
 
 class DecoderBlock_UNet(nn.Module):
     def __init__(self, in_channels, out_channels, skip_channels=0, scale_factor=2):
@@ -70,7 +147,6 @@ class DecoderBlock_UNet(nn.Module):
             x = torch.cat([x, skip], dim=1) 
             
         return self.conv(x)
-
 class ECGDecoder_UNet(nn.Module):
     def __init__(self, bottleneck_channels=2048):
         super().__init__()
@@ -106,7 +182,6 @@ class ECGDecoder_UNet(nn.Module):
         f1, f2, f3 = features_list 
         
         x = self.adapter(z) 
-        
         x = self.block1(x, skip=f3) 
         x = self.block2(x, skip=f2) 
         x = self.block3(x, skip=f1) 

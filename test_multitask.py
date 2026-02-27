@@ -2,7 +2,7 @@ import torch
 import numpy as np
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
-from load_data import LoadData
+from load_data import LoadData, PPG2ECG_Dataset
 from CLIP import ECGDecoder_UNet, ECGEssembleCLIP
 import random
 from scipy import signal
@@ -14,12 +14,13 @@ from metric import calculate_cosine_similarity, calculate_dtw_distance, calculat
 SEED = 40
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 BATCH_SIZE = 16 
-INPUT_LENGTH = 2400
+INPUT_LENGTH = 2048
 OUTPUT_EMBED_DIM = 128
-TEST_DATA_PATH = 'processed_data/mimic3_v1_test.npz' 
+TEST_DATA_PATH = 'datasets/total_z_test.npz' 
 CLIP_MODEL_PATH = "multitask_clip_best_model.pth"
 DECODER_MODEL_PATH = "multitask_decoder_best_model.pth"
-
+ppg_sqi_thresh = 0.3
+ecg_sqi_thresh = 0.8
 def set_seed(seed):
     random.seed(seed)
     np.random.seed(seed)
@@ -126,31 +127,55 @@ def save_ecg_reconstruction(output_path = "AF_Detection/ecg_reconstructions.npz"
 def run_visualization():
     set_seed(SEED)
     model_clip, model_converter = load_models()
+    
+    # Ép mô hình về chế độ test (rất quan trọng để cố định BatchNorm và Dropout)
+    model_clip.eval()
+    model_converter.eval()
+    
     seen_records = set()
 
     try:
-        test_dataset = LoadData(TEST_DATA_PATH)
+        test_dataset = PPG2ECG_Dataset(TEST_DATA_PATH)
         test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=True)
     except Exception as e:
         print(f"Error: {e}")
         return
    
-    print("Running inference for visualization...")
+    print("Running inference for visualization on ALL valid samples...")
     with torch.no_grad():
-        for i, (ecg, ppg, record_names) in enumerate(test_loader):
-            ppg_input = ppg.to(DEVICE).float().unsqueeze(1)
+        for batch in test_loader:
+            ecg, ppg, record_names, ppg_sqi, ecg_sqi = batch
             
-            ppg_embedding, feature_lists_PPG = model_clip(None, ppg_input)
+            # 1. TẠO MẶT NẠ LỌC CHẤT LƯỢNG (BOOLEAN MASK)
+            valid_mask = (ppg_sqi >= ppg_sqi_thresh) & (ecg_sqi >= ecg_sqi_thresh)
+            num_valid = valid_mask.sum().item()
+            
+            # Nếu cả batch đều là rác thì bỏ qua luôn, không đưa vào GPU
+            if num_valid == 0:
+                continue
+                
+            # 2. TRÍCH XUẤT DỮ LIỆU SẠCH
+            valid_ppg = ppg[valid_mask].to(DEVICE).float().unsqueeze(1)
+            valid_ecg = ecg[valid_mask] # Giữ Groundtruth ở CPU/RAM
+            
+            # Lọc danh sách tên record tương ứng với các mẫu sạch
+            valid_records = [record_names[j] for j in range(len(record_names)) if valid_mask[j]]
+
+            # 3. CHẠY SUY LUẬN CHỈ TRÊN DỮ LIỆU SẠCH
+            ppg_embedding, feature_lists_PPG = model_clip(None, valid_ppg)
             predicted_ecg = model_converter(ppg_embedding, feature_lists_PPG)
 
-            # np.atleast_2d vẫn được giữ lại để đảm bảo không lỗi khi batch size = 1
-            ppg_np = np.atleast_2d(ppg_input.cpu().squeeze().numpy())
-            ecg_true_np = np.atleast_2d(ecg.cpu().squeeze().numpy())
-            ecg_pred_np = np.atleast_2d(predicted_ecg.cpu().squeeze().numpy())
+            # 4. CHUYỂN ĐỔI SANG NUMPY ĐỂ VẼ HÌNH
+            # Dùng squeeze(1) để lột bỏ chiều Channel, atleast_2d để phòng hờ batch size = 1
+            ppg_np = np.atleast_2d(valid_ppg.cpu().squeeze(1).numpy())
+            ecg_true_np = np.atleast_2d(valid_ecg.numpy())
+            ecg_pred_np = np.atleast_2d(predicted_ecg.cpu().squeeze(1).numpy())
 
-            for idx in range(ppg_np.shape[0]):
-                current_rec_name = record_names[idx]
+            # 5. VẼ HÌNH TẤT CẢ CÁC MẪU ĐẠT CHUẨN
+            for idx in range(num_valid):
+                current_rec_name = valid_records[idx]
                 
+                # Chỉ vẽ nếu record này chưa từng được vẽ trước đó
                 if current_rec_name not in seen_records:
                     visualize_results(
                         ppg_np[idx], 
@@ -160,45 +185,94 @@ def run_visualization():
                         current_rec_name
                     )
                     seen_records.add(current_rec_name)
+                    
+    print(f"\nĐã hoàn tất quá trình vẽ biểu đồ. Tổng số mẫu đạt chuẩn SQI được vẽ: {len(seen_records)}")
 
 def run_loss():
     model_clip, model_converter = load_models()
-    test_dataset = LoadData(TEST_DATA_PATH)
+    
+    # Chuyển mô hình sang chế độ đánh giá
+    model_clip.eval()
+    model_converter.eval()
+    
+    test_dataset = PPG2ECG_Dataset(TEST_DATA_PATH)
     test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
 
-    total_rmse, total_pearson, total_dtw, total_cosine, total_samples = 0, 0, 0, 0, 0
+    total_rmse, total_pearson, total_dtw, total_cosine = 0, 0, 0, 0
+    total_initial_samples = 0
+    total_valid_samples = 0
 
-    print("Calculating Metrics...")
+    print("Calculating Metrics on Valid Samples...")
+    
     with torch.no_grad():
-        for i, (ecg, ppg, record_names) in enumerate(test_loader):
-            ppg_input = ppg.to(DEVICE).float().unsqueeze(1)
+        for batch in test_loader:
+            # 1. Giải nén dữ liệu từ DataLoader
+            ecg, ppg, record_names, ppg_sqi, ecg_sqi = batch
+            batch_size = ecg.size(0)
+            total_initial_samples += batch_size
             
-            ppg_embedding, feature_lists_PPG = model_clip(None, ppg_input)
+            # 2. TẠO MẶT NẠ LỌC (BOOLEAN MASK)
+            valid_mask = (ppg_sqi >= ppg_sqi_thresh) & (ecg_sqi >= ecg_sqi_thresh)
+            num_valid = valid_mask.sum().item()
+            
+            if num_valid == 0:
+                continue # Bỏ qua batch nếu toàn bộ là rác
+                
+            total_valid_samples += num_valid
+            
+            # 3. TRÍCH XUẤT DỮ LIỆU SẠCH
+            # Chỉ đẩy những mẫu hợp lệ lên GPU để tiết kiệm RAM
+            valid_ppg = ppg[valid_mask].to(DEVICE).float().unsqueeze(1)
+            valid_ecg_np = ecg[valid_mask].numpy() # Giữ ECG ở CPU dạng Numpy để lát tính metric
+            
+            # Lọc tên record tương ứng
+            valid_records = [record_names[j] for j in range(batch_size) if valid_mask[j]]
+
+            # 4. CHẠY SUY LUẬN (INFERENCE)
+            # Giả định model_clip không cần nhãn ecg ở bước inference nên truyền None
+            ppg_embedding, feature_lists_PPG = model_clip(None, valid_ppg)
             predicted_ecg = model_converter(ppg_embedding, feature_lists_PPG)
 
-            ecg_true_np = np.atleast_2d(ecg.cpu().squeeze().numpy())
-            ecg_pred_np = np.atleast_2d(predicted_ecg.cpu().squeeze().numpy())
+            # Đưa kết quả dự đoán về CPU và Numpy
+            pred_ecg_np = predicted_ecg.cpu().squeeze(1).numpy()
 
-            for b in range(ecg_true_np.shape[0]):
-                true_s = ecg_true_np[b]
-                pred_s = ecg_pred_np[b]
+            # Đảm bảo mảng luôn là 2D (phòng trường hợp batch sau khi lọc chỉ còn đúng 1 mẫu)
+            valid_ecg_np = np.atleast_2d(valid_ecg_np)
+            pred_ecg_np = np.atleast_2d(pred_ecg_np)
+
+            # 5. TÍNH TOÁN METRIC (Chỉ trên dữ liệu sạch)
+            for b in range(num_valid):
+                true_s = valid_ecg_np[b]
+                pred_s = pred_ecg_np[b]
 
                 rmse, pearson = calculate_metrics(true_s, pred_s)
                 dtw = calculate_dtw_distance(true_s, pred_s)
                 cosine = calculate_cosine_similarity(true_s, pred_s)
-                # print("Record:", record_names[b])
-                # print(f"  rRMSE: {rmse:.4f}, Pearson: {pearson:.4f}, DTW: {dtw:.4f}, Cosine: {cosine:.4f}")
+                
+                # In chi tiết nếu cần thiết
+                # print(f"Record: {valid_records[b]} | rRMSE: {rmse:.4f}, Pearson: {pearson:.4f}, DTW: {dtw:.4f}, Cosine: {cosine:.4f}")
+                
                 total_rmse += rmse
                 total_pearson += pearson
                 total_dtw += dtw
                 total_cosine += cosine
-                total_samples += 1
 
-    print(f"\nFinal Results ({total_samples} samples):")
-    print(f"rRMSE: {total_rmse/total_samples:.4f}")
-    print(f"Pearson: {total_pearson/total_samples:.4f}")
-    print(f"DTW: {total_dtw/total_samples:.4f}")
-    print(f"Cosine: {total_cosine/total_samples:.4f}")
+    # 6. BÁO CÁO KẾT QUẢ TỔNG QUAN
+    print("\n" + "="*40)
+    print("FINAL TESTING RESULTS")
+    print("="*40)
+    print(f"Total samples scanned  : {total_initial_samples}")
+    print(f"Valid samples evaluated: {total_valid_samples} ({(total_valid_samples/total_initial_samples)*100:.2f}%)")
+    print("-" * 40)
+    
+    if total_valid_samples > 0:
+        print(f"Average rRMSE  : {total_rmse / total_valid_samples:.4f}")
+        print(f"Average Pearson: {total_pearson / total_valid_samples:.4f}")
+        print(f"Average DTW    : {total_dtw / total_valid_samples:.4f}")
+        print(f"Average Cosine : {total_cosine / total_valid_samples:.4f}")
+    else:
+        print("CẢNH BÁO: Không có mẫu nào vượt qua được ngưỡng SQI đã đặt!")
+    print("="*40)
 
 if __name__ == "__main__":
     # run_visualization()

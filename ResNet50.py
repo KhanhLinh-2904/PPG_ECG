@@ -110,7 +110,12 @@ if __name__ == '__main__':
     
     print(f"Shape of dummy ECG input: {dummy_ecg.shape}")
     
-    output_ecg_embedding,_,_ = model(dummy_ecg)
+    output_ecg_embedding,f4, [f1, f2, f3] = model(dummy_ecg)
     
-    print(f"Shape of predicted ECG features output: {output_ecg_embedding.shape}")
-    print(f"Expected shape: [4, 128] (Batch size, ECG Embedding Dimension)")
+    print(f"Shape of predicted PPG features output: {output_ecg_embedding.shape}")
+    print(f"f4: {f4.shape}")
+    print(f"f1: {f1.shape}")
+    print(f"f2: {f2.shape}")
+    print(f"f3: {f3.shape}")
+
+    # print(f"Expected shape: [4, 128] (Batch size, ECG Embedding Dimension)")
