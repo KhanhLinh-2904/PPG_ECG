@@ -121,7 +121,7 @@ def split_segments_and_save_by_record(total_data: Dict[str, Any], save_prefix: s
         np.savez(save_path, **save_dict)
         print(f"→ Đã lưu {split_name.upper()}: {len(current_indices)} mẫu tại '{save_path}'")
 
-    print("Hoàn tất xử lý!")
+    print("Complete!")
 
 if __name__ == "__main__":
     set_seed(SEED)

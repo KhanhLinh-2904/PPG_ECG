@@ -32,7 +32,10 @@ class ECGEssembleCLIP(nn.Module):
         else:
             ecg_original_features, featured_ECG, feature_lists_ECG = self.encode_ecg(ecg_original)
             ecg_predicted_features, featured_PPG, feature_lists_PPG = self.encode_ppg(ppg_original)
-           
+            # print("ecg_original_features shape: ", ecg_original_features.shape)
+            # print("ecg_predicted_features shape: ", ecg_predicted_features.shape)
+            # print("featured_PPG shape: ", featured_PPG.shape)
+            # print("featured_ECG shape: ", featured_ECG.shape)
             ecg_original_features = ecg_original_features / ecg_original_features.norm(dim=1, keepdim=True)
             ecg_predicted_features = ecg_predicted_features / ecg_predicted_features.norm(dim=1, keepdim=True)
 
@@ -148,9 +151,10 @@ class DecoderBlock_UNet(nn.Module):
             
         return self.conv(x)
 class ECGDecoder_UNet(nn.Module):
-    def __init__(self, bottleneck_channels=2048):
+    def __init__(self, bottleneck_channels=2048,  target_length=2400):
         super().__init__()
-        
+        print("bottleneck_channels: ", bottleneck_channels)
+        self.target_length = target_length
         # Adapter: Bottleneck 
         self.adapter = nn.Sequential(
             nn.Conv1d(bottleneck_channels, 512, kernel_size=1),
@@ -174,7 +178,7 @@ class ECGDecoder_UNet(nn.Module):
 
         # Final Conv: 16 channels -> 1 channel (ECG Signal)
         self.final_conv = nn.Conv1d(16, 1, kernel_size=1)
-        self.final_activation = nn.Sigmoid()
+        # self.final_activation = nn.Sigmoid()
 
     def forward(self, z, features_list):
         # features_list [f1, f2, f3] 
@@ -190,6 +194,13 @@ class ECGDecoder_UNet(nn.Module):
         x = self.block5(x) 
         
         x = self.final_conv(x)
+        if x.shape[-1] != self.target_length:
+            x = nn.functional.interpolate(
+                x, 
+                size=self.target_length, 
+                mode='linear', 
+                align_corners=False
+            )
         # x = self.final_activation(x)
         return x
 
@@ -210,3 +221,17 @@ class PPGtoECGConverter(nn.Module):
         predicted_ecg = self.ecg_decoder(z_ppg, feature_lists_PPG)
         
         return predicted_ecg
+    
+
+class FullModelWrapper(torch.nn.Module):
+    def __init__(self, nf, clip, conv):
+        super().__init__()
+        self.nf = nf
+        self.clip = clip
+        self.conv = conv
+    def forward(self, x_ppg, x_ecg):
+        # Giả lập luồng đi của dữ liệu
+        masked_ppg, _, _ = self.nf(x_ppg)
+        logits, embed, features = self.clip(x_ecg, masked_ppg)
+        out = self.conv(embed, features)
+        return out

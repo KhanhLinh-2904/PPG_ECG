@@ -2,13 +2,15 @@ import torch
 import numpy as np
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
-from load_data import LoadData, PPG2ECG_Dataset
+from load_data import LoadData, PPG2ECG_Dataset, quality_aware_collate_fn, PPG2ECG_BUT_Dataset
 from CLIP import ECGDecoder_UNet, ECGEssembleCLIP
 import random
 from scipy import signal
 import os
-
+from tqdm import tqdm
+import torch.nn.functional as F
 from metric import calculate_cosine_similarity, calculate_dtw_distance, calculate_metrics
+from train_multitask import TemporalNoiseFilter
 
 # --- CONFIGURATION ---
 SEED = 40
@@ -16,9 +18,10 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 BATCH_SIZE = 16 
 INPUT_LENGTH = 2048
 OUTPUT_EMBED_DIM = 128
-TEST_DATA_PATH = 'datasets/total_z_test.npz' 
+TEST_DATA_PATH = 'processed_data/mimic3_v1_test.npz' 
 CLIP_MODEL_PATH = "multitask_clip_best_model.pth"
 DECODER_MODEL_PATH = "multitask_decoder_best_model.pth"
+NOISE_FILTER_MODEL_PATH = "multitask_noise_filter_best.pth"
 ppg_sqi_thresh = 0.3
 ecg_sqi_thresh = 0.8
 def set_seed(seed):
@@ -30,64 +33,34 @@ def set_seed(seed):
 
 def load_models():
     print(f"Loading models on {DEVICE}...")
+    
+    # 1. Khởi tạo CẢ 3 MÔ HÌNH và đưa lên thiết bị (GPU/CPU)
+    noise_filter = TemporalNoiseFilter(in_channels=1).to(DEVICE)
     model_clip = ECGEssembleCLIP(embed_dim=OUTPUT_EMBED_DIM).to(DEVICE)
-    model_converter = ECGDecoder_UNet(bottleneck_channels=2048).to(DEVICE)
+    model_converter = ECGDecoder_UNet(bottleneck_channels=2048, target_length=2400).to(DEVICE)
 
+    # 2. Tải file trọng số (weights) một cách an toàn
     if torch.cuda.is_available():
+        noise_weights = torch.load(NOISE_FILTER_MODEL_PATH)
         clip_weights = torch.load(CLIP_MODEL_PATH)
         decoder_weights = torch.load(DECODER_MODEL_PATH)
     else:
+        noise_weights = torch.load(NOISE_FILTER_MODEL_PATH, map_location='cpu')
         clip_weights = torch.load(CLIP_MODEL_PATH, map_location='cpu')
         decoder_weights = torch.load(DECODER_MODEL_PATH, map_location='cpu')
 
+    # 3. Nạp trọng số vào cấu trúc mạng Nơ-ron
+    noise_filter.load_state_dict(noise_weights)
     model_clip.load_state_dict(clip_weights)
     model_converter.load_state_dict(decoder_weights)
+    
+    # 4. Ép TẤT CẢ về chế độ đánh giá (Cực kỳ quan trọng để cố định BatchNorm)
+    noise_filter.eval()
     model_clip.eval()
     model_converter.eval()
-    return model_clip, model_converter
-
-def visualize_results(ppg, ecg_true, ecg_pred, sample_idx, record_name):
-    """ Vẽ biểu đồ với kích thước cửa sổ bình thường """
-    print(f"Visualizing Record: {record_name}")
-    t = np.arange(len(ppg))
-
-    # Kích thước figure được giữ ở mức hợp lý (12x10) thay vì ép toàn màn hình
-    plt.figure(figsize=(12, 10))
     
-    plt.suptitle(f"Record: {record_name} - Sample ID: {sample_idx}", fontsize=14, fontweight='bold')
-
-    # 1. PPG Input
-    plt.subplot(4, 1, 1)
-    plt.plot(t, ppg, color='green', label='Input PPG')
-    plt.title("Input PPG Signal")
-    plt.grid(True, alpha=0.3)
-    plt.legend(loc='upper right')
-
-    # 2. Ground Truth ECG
-    plt.subplot(4, 1, 2)
-    plt.plot(t, ecg_true, color='blue', label='Ground Truth ECG')
-    plt.title("Ground Truth ECG")
-    plt.grid(True, alpha=0.3)
-    plt.legend(loc='upper right')
-
-    # 3. Predicted ECG
-    plt.subplot(4, 1, 3)
-    plt.plot(t, ecg_pred, color='red', label='Predicted ECG')
-    plt.title("Predicted ECG (Reconstructed)")
-    plt.grid(True, alpha=0.3)
-    plt.legend(loc='upper right')
-
-    # 4. Comparison
-    plt.subplot(4, 1, 4)
-    plt.plot(t, ecg_true, color='black', label='Ground Truth', alpha=0.7)
-    plt.plot(t, ecg_pred, color='red', label='Predicted', linestyle='--', alpha=0.8)
-    plt.title("Comparison: Ground Truth vs Predicted ECG")
-    plt.xlabel("Time Samples")
-    plt.grid(True, alpha=0.3)
-    plt.legend(loc='upper right')
-
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    plt.show()
+    # 5. Trả về đúng 3 giá trị theo thứ tự mà run_loss() đang chờ
+    return noise_filter, model_clip, model_converter
 
 def save_ecg_reconstruction(output_path = "AF_Detection/ecg_reconstructions.npz"):
     set_seed(SEED)
@@ -126,155 +99,156 @@ def save_ecg_reconstruction(output_path = "AF_Detection/ecg_reconstructions.npz"
 
 def run_visualization():
     set_seed(SEED)
-    model_clip, model_converter = load_models()
     
-    # Ép mô hình về chế độ test (rất quan trọng để cố định BatchNorm và Dropout)
+    # 1. Tải mô hình và chuyển sang chế độ Eval
+    noise_filter, model_clip, model_converter = load_models()
+    noise_filter.eval()
     model_clip.eval()
     model_converter.eval()
     
-    seen_records = set()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     try:
         test_dataset = PPG2ECG_Dataset(TEST_DATA_PATH)
-        test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=True)
+        total_test_samples = len(test_dataset)
+        print(f"Tổng số mẫu trong tập kiểm tra: {total_test_samples}")
+        # Để trực quan hóa, thường ta dùng Batch Size nhỏ hoặc lấy mẫu ngẫu nhiên
+        test_loader = DataLoader(test_dataset, batch_size=4, 
+                                 shuffle=False, num_workers=4,
+                                 pin_memory=True, collate_fn=quality_aware_collate_fn)
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Error loading dataset: {e}")
         return
    
-    print("Running inference for visualization on ALL valid samples...")
+    print("🚀 Running inference for visualization...")
+    
     with torch.no_grad():
         for batch in test_loader:
-            ecg, ppg, record_names, ppg_sqi, ecg_sqi = batch
+            ecg, ppg, record_names, ppg_mask, ppg_sqi, ecg_sqi = batch
             
-            # 1. TẠO MẶT NẠ LỌC CHẤT LƯỢNG (BOOLEAN MASK)
-            valid_mask = (ppg_sqi >= ppg_sqi_thresh) & (ecg_sqi >= ecg_sqi_thresh)
-            num_valid = valid_mask.sum().item()
-            
-            # Nếu cả batch đều là rác thì bỏ qua luôn, không đưa vào GPU
-            if num_valid == 0:
-                continue
-                
-            # 2. TRÍCH XUẤT DỮ LIỆU SẠCH
-            valid_ppg = ppg[valid_mask].to(DEVICE).float().unsqueeze(1)
-            valid_ecg = ecg[valid_mask] # Giữ Groundtruth ở CPU/RAM
-            
-            # Lọc danh sách tên record tương ứng với các mẫu sạch
-            valid_records = [record_names[j] for j in range(len(record_names)) if valid_mask[j]]
+            # Chuẩn bị dữ liệu đầu vào
+            ppg_input = ppg.to(device).float().unsqueeze(1)
+            ecg_target = ecg.to(device).float().unsqueeze(1)
+            true_mask = ppg_mask.to(device).float().unsqueeze(1)
 
-            # 3. CHẠY SUY LUẬN CHỈ TRÊN DỮ LIỆU SẠCH
-            ppg_embedding, feature_lists_PPG = model_clip(None, valid_ppg)
+            # 2. Chạy qua hệ thống model
+            # Bước 1: Lọc nhiễu PPG
+            masked_ppg, pred_mask, _ = noise_filter(ppg_input)
+            
+            # Bước 2: Trích xuất embedding và feature maps
+            ppg_embedding, feature_lists_PPG = model_clip(None, masked_ppg)
+            
+            # Bước 3: Tái tạo ECG từ PPG đã lọc
             predicted_ecg = model_converter(ppg_embedding, feature_lists_PPG)
 
-            # 4. CHUYỂN ĐỔI SANG NUMPY ĐỂ VẼ HÌNH
-            # Dùng squeeze(1) để lột bỏ chiều Channel, atleast_2d để phòng hờ batch size = 1
-            ppg_np = np.atleast_2d(valid_ppg.cpu().squeeze(1).numpy())
-            ecg_true_np = np.atleast_2d(valid_ecg.numpy())
-            ecg_pred_np = np.atleast_2d(predicted_ecg.cpu().squeeze(1).numpy())
-
-            # 5. VẼ HÌNH TẤT CẢ CÁC MẪU ĐẠT CHUẨN
-            for idx in range(num_valid):
-                current_rec_name = valid_records[idx]
+            # 3. Vẽ biểu đồ so sánh cho từng mẫu trong Batch
+            for i in range(ppg_input.size(0)):
+                fig, axes = plt.subplots(4, 1, figsize=(15, 12), sharex=True)
                 
-                # Chỉ vẽ nếu record này chưa từng được vẽ trước đó
-                if current_rec_name not in seen_records:
-                    visualize_results(
-                        ppg_np[idx], 
-                        ecg_true_np[idx], 
-                        ecg_pred_np[idx], 
-                        len(seen_records), 
-                        current_rec_name
-                    )
-                    seen_records.add(current_rec_name)
-                    
-    print(f"\nĐã hoàn tất quá trình vẽ biểu đồ. Tổng số mẫu đạt chuẩn SQI được vẽ: {len(seen_records)}")
+                # Tín hiệu PPG đầu vào và Mask dự đoán
+                axes[0].plot(ppg[i].cpu().numpy(), color='blue', label='Original PPG')
+                axes[0].set_title(f"Record: {record_names[i]} | PPG SQI: {ppg_sqi[i]:.2f}")
+                axes[0].legend(loc='upper right')
+
+                # Mask (Chất lượng tín hiệu) - So sánh Ground Truth và Prediction
+                axes[1].fill_between(range(len(ppg_mask[i])), ppg_mask[i].cpu().numpy(), color='green', alpha=0.3, label='GT Mask')
+                axes[1].plot(pred_mask[i, 0].cpu().numpy(), color='red', linestyle='--', label='Pred Mask')
+                axes[1].set_title("Signal Quality Mask (Noise Detection)")
+                axes[1].legend(loc='upper right')
+
+                # ECG thật (Ground Truth)
+                axes[2].plot(ecg[i].cpu().numpy(), color='black', label='Ground Truth ECG')
+                axes[2].set_title(f"Target ECG | ECG SQI: {ecg_sqi[i]:.2f}")
+                axes[2].legend(loc='upper right')
+
+                # ECG dự đoán (Reconstructed)
+                axes[3].plot(predicted_ecg[i, 0].cpu().numpy(), color='crimson', label='Reconstructed ECG')
+                axes[3].set_title("Model Predicted ECG")
+                axes[3].set_xlabel("Samples")
+                axes[3].legend(loc='upper right')
+
+                plt.tight_layout()
+                plt.show()
+
 
 def run_loss():
-    model_clip, model_converter = load_models()
-    
-    # Chuyển mô hình sang chế độ đánh giá
+    # 1. Tải mô hình và chuyển sang chế độ đánh giá
+    noise_filter, model_clip, model_converter = load_models()
+    noise_filter.eval()
     model_clip.eval()
     model_converter.eval()
     
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    # Khởi tạo Dataset và DataLoader
     test_dataset = PPG2ECG_Dataset(TEST_DATA_PATH)
-    test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
+    test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, 
+                             shuffle=False, num_workers=4,
+                             pin_memory=True, collate_fn=quality_aware_collate_fn)
 
+    # Khởi tạo các biến tích lũy
     total_rmse, total_pearson, total_dtw, total_cosine = 0, 0, 0, 0
-    total_initial_samples = 0
-    total_valid_samples = 0
+    total_samples = 0
 
-    print("Calculating Metrics on Valid Samples...")
+    print(f"🔍 Đang tính toán Metrics trên TOÀN BỘ {len(test_dataset)} mẫu tín hiệu...")
     
     with torch.no_grad():
-        for batch in test_loader:
-            # 1. Giải nén dữ liệu từ DataLoader
-            ecg, ppg, record_names, ppg_sqi, ecg_sqi = batch
-            batch_size = ecg.size(0)
-            total_initial_samples += batch_size
+        for batch in tqdm(test_loader, desc="Đang đánh giá"):
+            # Lấy dữ liệu từ batch
+            ecg, ppg, record_names, ppg_mask, ppg_sqi, ecg_sqi = batch
             
-            # 2. TẠO MẶT NẠ LỌC (BOOLEAN MASK)
-            valid_mask = (ppg_sqi >= ppg_sqi_thresh) & (ecg_sqi >= ecg_sqi_thresh)
-            num_valid = valid_mask.sum().item()
-            
-            if num_valid == 0:
-                continue # Bỏ qua batch nếu toàn bộ là rác
-                
-            total_valid_samples += num_valid
-            
-            # 3. TRÍCH XUẤT DỮ LIỆU SẠCH
-            # Chỉ đẩy những mẫu hợp lệ lên GPU để tiết kiệm RAM
-            valid_ppg = ppg[valid_mask].to(DEVICE).float().unsqueeze(1)
-            valid_ecg_np = ecg[valid_mask].numpy() # Giữ ECG ở CPU dạng Numpy để lát tính metric
-            
-            # Lọc tên record tương ứng
-            valid_records = [record_names[j] for j in range(batch_size) if valid_mask[j]]
+            # Đưa lên thiết bị tính toán
+            ppg_input = ppg.to(device).float().unsqueeze(1)    # [Batch, 1, 300]
+            ecg_target = ecg.to(device).float().unsqueeze(1)   # [Batch, 1, 10000]
 
-            # 4. CHẠY SUY LUẬN (INFERENCE)
-            # Giả định model_clip không cần nhãn ecg ở bước inference nên truyền None
-            ppg_embedding, feature_lists_PPG = model_clip(None, valid_ppg)
+            # 2. Quy trình suy luận (Inference)
+            # Bước A: Qua bộ lọc nhiễu (Dù không dùng mask để lọc metric, vẫn cần qua filter để làm sạch đầu vào)
+            masked_ppg, _, _ = noise_filter(ppg_input)
+            
+            # Bước B: Trích xuất embedding từ PPG
+            ppg_embedding, feature_lists_PPG = model_clip(None, masked_ppg)
+            
+            # Bước C: Tái tạo tín hiệu ECG
             predicted_ecg = model_converter(ppg_embedding, feature_lists_PPG)
 
-            # Đưa kết quả dự đoán về CPU và Numpy
-            pred_ecg_np = predicted_ecg.cpu().squeeze(1).numpy()
+            # 3. Đồng bộ kích thước dự đoán lên 10.000 mẫu để khớp với Ground Truth
+            if predicted_ecg.shape[-1] != ecg_target.shape[-1]:
+                predicted_ecg = F.interpolate(predicted_ecg, size=ecg_target.shape[-1], mode='linear')
 
-            # Đảm bảo mảng luôn là 2D (phòng trường hợp batch sau khi lọc chỉ còn đúng 1 mẫu)
-            valid_ecg_np = np.atleast_2d(valid_ecg_np)
-            pred_ecg_np = np.atleast_2d(pred_ecg_np)
-
-            # 5. TÍNH TOÁN METRIC (Chỉ trên dữ liệu sạch)
-            for b in range(num_valid):
-                true_s = valid_ecg_np[b]
-                pred_s = pred_ecg_np[b]
-
-                rmse, pearson = calculate_metrics(true_s, pred_s)
-                dtw = calculate_dtw_distance(true_s, pred_s)
-                cosine = calculate_cosine_similarity(true_s, pred_s)
+            # 4. Tính toán Metrics cho từng mẫu trong Batch (Sử dụng toàn bộ 10.000 điểm)
+            for i in range(ecg_target.size(0)):
+                # Lấy tín hiệu 1D
+                s_true = ecg_target[i, 0]
+                s_pred = predicted_ecg[i, 0]
                 
-                # In chi tiết nếu cần thiết
-                # print(f"Record: {valid_records[b]} | rRMSE: {rmse:.4f}, Pearson: {pearson:.4f}, DTW: {dtw:.4f}, Cosine: {cosine:.4f}")
+                # Gọi các hàm bắt buộc theo yêu cầu
+                rmse, pearson = calculate_metrics(s_true, s_pred)
+                dtw = calculate_dtw_distance(s_true, s_pred)
+                cosine = calculate_cosine_similarity(s_true, s_pred)
                 
+                # Cộng dồn kết quả
                 total_rmse += rmse
                 total_pearson += pearson
                 total_dtw += dtw
                 total_cosine += cosine
+                total_samples += 1
 
-    # 6. BÁO CÁO KẾT QUẢ TỔNG QUAN
-    print("\n" + "="*40)
-    print("FINAL TESTING RESULTS")
-    print("="*40)
-    print(f"Total samples scanned  : {total_initial_samples}")
-    print(f"Valid samples evaluated: {total_valid_samples} ({(total_valid_samples/total_initial_samples)*100:.2f}%)")
-    print("-" * 40)
-    
-    if total_valid_samples > 0:
-        print(f"Average rRMSE  : {total_rmse / total_valid_samples:.4f}")
-        print(f"Average Pearson: {total_pearson / total_valid_samples:.4f}")
-        print(f"Average DTW    : {total_dtw / total_valid_samples:.4f}")
-        print(f"Average Cosine : {total_cosine / total_valid_samples:.4f}")
+    # 5. Xuất báo cáo kết quả trung bình
+    if total_samples > 0:
+        print("\n" + "="*40)
+        print("📊 BÁO CÁO HIỆU SUẤT TRÊN TOÀN BỘ TẬP TEST")
+        print(f"Tổng số mẫu: {total_samples}")
+        print(f"RMSE trung bình:    {total_rmse / total_samples:.4f}")
+        print(f"Pearson trung bình: {total_pearson / total_samples:.4f}")
+        print(f"DTW trung bình:     {total_dtw / total_samples:.4f}")
+        print(f"Cosine trung bình:  {total_cosine / total_samples:.4f}")
+        print("="*40)
     else:
-        print("CẢNH BÁO: Không có mẫu nào vượt qua được ngưỡng SQI đã đặt!")
-    print("="*40)
+        print("⚠️ Không có dữ liệu để đánh giá.")
+    
+   
 
 if __name__ == "__main__":
-    # run_visualization()
-    run_loss()
+    run_visualization()
+    # run_loss()
     # save_ecg_reconstruction("AF_Detection/total_test_ecg_reconstructions_no_mm.npz")

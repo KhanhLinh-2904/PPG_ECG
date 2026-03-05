@@ -1,8 +1,8 @@
-from CLIP import ECGDecoder_UNet, ECGEssembleCLIP
+from CLIP import ECGDecoder_UNet, ECGEssembleCLIP, FullModelWrapper
 from loss import FastSoftCLIPLoss
 import torch
 from torch.utils.data import DataLoader
-from load_data import LoadData, PPG2ECG_Dataset, quality_aware_collate_fn, PPG2ECG_BUT_Dataset
+from load_data import LoadData, PPG2ECG_Dataset, quality_aware_collate_fn
 from torch.cuda.amp import autocast, GradScaler
 from torch.optim import AdamW
 from tqdm import tqdm
@@ -12,9 +12,12 @@ import numpy as np
 import random
 import torch.nn.functional as F
 from utils import detect_ecg_features
-
+from torchinfo import summary
+import shutil
+import psutil
 # --- (CONSTANTS) ---
 SEED = 44
+INPUT_LENGTH = 2048
 NUM_EPOCHS = 200
 LEARNING_RATE = 1e-4
 BATCH_SIZE = 128
@@ -24,9 +27,16 @@ WEIGHT_PEARSON = 0.5
 WEIGHT_FREQUENCY = 0.01
 WEIGHT_MASK = 1.0    # 🔥 TRỌNG SỐ MỚI CHO MASK LOSS
 OUTPUT_EMBED_DIM = 128
-
 frequency = 125
+def check_system_resources():
+    # RAM Hệ thống
+    vm = psutil.virtual_memory()
+    # Ổ cứng (để lưu file .pth)
+    total, used, free = shutil.disk_usage("/")
 
+    print("\n" + "-"*20 + " SYSTEM RESOURCES " + "-"*20)
+    print(f"System RAM: {vm.percent}% used ({vm.available / 1024**3:.2f} GB free)")
+    print(f"Disk Space: {free / 1024**3:.2f} GB free")
 def set_seed(seed):
     random.seed(seed)
     np.random.seed(seed)
@@ -49,7 +59,7 @@ def plot_losses_combined(losses_dict, title='Training Losses'):
     plt.savefig(f"{title.lower().replace(' ', '_')}.png")
 
 # =====================================================================
-# TEMPORAL NOISE FILTER
+# 🔥 THÊM MỚI: BỘ LỌC NHIỄU THỜI GIAN (TEMPORAL NOISE FILTER)
 # =====================================================================
 class TemporalNoiseFilter(torch.nn.Module):
     def __init__(self, in_channels=1):
@@ -59,6 +69,7 @@ class TemporalNoiseFilter(torch.nn.Module):
             torch.nn.BatchNorm1d(16),
             torch.nn.ReLU(),
             torch.nn.Conv1d(16, 1, kernel_size=1)
+            # 🔥 ĐÃ XÓA nn.Sigmoid() Ở ĐÂY
         )
 
     def forward(self, x):
@@ -89,6 +100,16 @@ class PearsonCorrelationLoss(torch.nn.Module):
         r = r_num / r_den
         return 1 - r 
 
+def check_gpu_memory(epoch):
+    if torch.cuda.is_available():
+        allocated = torch.cuda.memory_allocated(0) / (1024**2)
+        reserved = torch.cuda.memory_reserved(0) / (1024**2)
+        total_vram = torch.cuda.get_device_properties(0).total_memory / (1024**2)
+        
+        print(f"\n--- GPU Memory Report (Epoch {epoch}) ---")
+        print(f"Used: {allocated:.2f} MB")
+        print(f"Reserved (Cache): {reserved:.2f} MB")
+        print(f"Free: {total_vram - allocated:.2f} MB / {total_vram:.2f} MB")
 
 def train_epoch_combined(
     noise_filter, model_clip, model_converter, dataloader, optimizer, 
@@ -107,10 +128,16 @@ def train_epoch_combined(
     for ecg, ppg, _, ppg_sqm, ppg_sqi, ecg_sqi in progress_bar:
         ecg_target = ecg.to(device).float().unsqueeze(1)
         ppg_input = ppg.to(device).float().unsqueeze(1)
-
+        print("shape of ppg_input: ", ppg_input.shape)
+        # Đưa Mask thực tế lên GPU (Shape: [Batch, 1, Seq_Len])
         true_ppg_sqm = ppg_sqm.to(device).float().unsqueeze(1)
         
+        # ecg_sqi vẫn là 1 số vô hướng cho mỗi mẫu, view thành [Batch, 1, 1] 
+        # để chuẩn bị broadcast nhân với true_ppg_sqm
         ecg_sqi = ecg_sqi.to(device).float().view(-1, 1, 1)
+        
+        # ppg_sqi (vô hướng) KHÔNG CẦN NỮA VÌ ĐÃ CÓ true_ppg_sqm
+        # ppg_sqi = ppg_sqi.to(device).float().view(-1, 1, 1) 
         
         optimizer.zero_grad()
         
@@ -141,12 +168,6 @@ def train_epoch_combined(
             
             # Nhân với confidence_weights [Batch, 1, Seq_Len]
             # Điểm nhiễu sẽ bị nhân với 0, triệt tiêu loss
-            if confidence_weights.shape[-1] != unweighted_mse.shape[-1]:
-                confidence_weights = F.interpolate(
-                    confidence_weights, 
-                    size=unweighted_mse.shape[-1], 
-                    mode='nearest' # Dùng 'nearest' để giữ nguyên giá trị 0/1 của mask
-                )
             m_loss = torch.sum(unweighted_mse * confidence_weights) / (torch.sum(confidence_weights) + 1e-8)
 
             # Pearson Loss vẫn tính trung bình trên cả đoạn tín hiệu
@@ -187,10 +208,11 @@ def train_epoch_combined(
 
 if __name__ == "__main__":
     set_seed(SEED)
+    check_system_resources()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    train_dataset = PPG2ECG_BUT_Dataset('processed_data/but_train.npz')
+    train_dataset = PPG2ECG_Dataset('processed_data/mimic3_v1_train.npz') 
     sample_data = train_dataset[0]
     ecg_signal = sample_data[0]
     length_ecg = len(ecg_signal)
@@ -201,7 +223,7 @@ if __name__ == "__main__":
     # Khởi tạo thêm Bộ lọc nhiễu
     noise_filter = TemporalNoiseFilter(in_channels=1).to(device)
     model_clip = ECGEssembleCLIP(embed_dim=OUTPUT_EMBED_DIM).to(device)
-    model_converter = ECGDecoder_UNet().to(device)
+    model_converter = ECGDecoder_UNet(bottleneck_channels=length_ecg).to(device)
 
     contrast_loss = FastSoftCLIPLoss(teacher_temp=0.05, student_temp=0.07).to(device)
     mse_loss = torch.nn.MSELoss(reduction='none').to(device) 
@@ -228,6 +250,18 @@ if __name__ == "__main__":
         'Pearson Loss': [], 'Mask Loss': []
     }
 
+    print("\n" + "="*30 + " MODEL SUMMARY " + "="*30)
+
+
+    full_model = FullModelWrapper(noise_filter, model_clip, model_converter)
+
+    # Kiểm tra với input_length = 2048
+    # Định dạng: (Batch, Channels, Length)
+    print("\n summeray  FullModelWrapper ******************************************************************")
+    summary(full_model, input_data=[torch.randn(648, 1, 2400).to(device), 
+                                    torch.randn(648, 1, 2400).to(device)])
+    print("   ******************************************************************\n")
+
     for epoch in range(1, NUM_EPOCHS + 1):
         start = time.time()
 
@@ -236,7 +270,6 @@ if __name__ == "__main__":
             contrast_loss, mse_loss, pearson_loss, 
             device, scaler, loss_weights
         )
-        
         history['Total Loss'].append(avg_losses['total'])
         history['Contrastive Loss'].append(avg_losses['contrast'])
         history['MSE Loss'].append(avg_losses['mse'])
@@ -253,6 +286,8 @@ if __name__ == "__main__":
             print(f">> Saved best model at epoch {epoch}")
 
         print(f"Epoch time: {time.time() - start:.1f}s")
+        check_gpu_memory(epoch)
+
         
     print("\nTraining Complete.")
     plot_losses_combined(history, title="Training Loss Components Over Epochs")
