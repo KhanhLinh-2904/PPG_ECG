@@ -2,7 +2,7 @@ from CLIP import ECGDecoder_UNet, ECGEssembleCLIP
 from loss import FastSoftCLIPLoss
 import torch
 from torch.utils.data import DataLoader
-from load_data import LoadData, PPG2ECG_Dataset, quality_aware_collate_fn, PPG2ECG_BUT_Dataset
+from load_data import LoadData
 from torch.cuda.amp import autocast, GradScaler
 from torch.optim import AdamW
 from tqdm import tqdm
@@ -15,14 +15,14 @@ from utils import detect_ecg_features
 
 # --- (CONSTANTS) ---
 SEED = 44
-NUM_EPOCHS = 200
+NUM_EPOCHS = 100
 LEARNING_RATE = 1e-4
-BATCH_SIZE = 128
+BATCH_SIZE = 64
 WEIGHT_CONTRASTIVE = 0.1
 WEIGHT_L1 = 1.0      
 WEIGHT_PEARSON = 0.5 
 WEIGHT_FREQUENCY = 0.01
-WEIGHT_MASK = 1.0    # 🔥 TRỌNG SỐ MỚI CHO MASK LOSS
+WEIGHT_MASK = 1.0   
 OUTPUT_EMBED_DIM = 128
 
 frequency = 125
@@ -48,32 +48,13 @@ def plot_losses_combined(losses_dict, title='Training Losses'):
     plt.grid(True)
     plt.savefig(f"{title.lower().replace(' ', '_')}.png")
 
-# =====================================================================
-# TEMPORAL NOISE FILTER
-# =====================================================================
-class TemporalNoiseFilter(torch.nn.Module):
-    def __init__(self, in_channels=1):
-        super().__init__()
-        self.attention = torch.nn.Sequential(
-            torch.nn.Conv1d(in_channels, 16, kernel_size=7, padding=3),
-            torch.nn.BatchNorm1d(16),
-            torch.nn.ReLU(),
-            torch.nn.Conv1d(16, 1, kernel_size=1)
-        )
-
-    def forward(self, x):
-        logits = self.attention(x)             # Đầu ra thô (Logits) chạy từ -inf đến +inf
-        pred_mask = torch.sigmoid(logits)      # Ép về 0-1 để làm mặt nạ nhân với tín hiệu
-        masked_x = x * pred_mask 
-        
-        # TRẢ VỀ THÊM logits để đưa vào hàm Loss
-        return masked_x, pred_mask, logits
 # --- PEARSON CORRELATION LOSS ---
 class PearsonCorrelationLoss(torch.nn.Module):
     def __init__(self):
         super(PearsonCorrelationLoss, self).__init__()
 
     def forward(self, x, y):
+      
         x_flat = x.view(x.shape[0], -1)
         y_flat = y.view(y.shape[0], -1)
         
@@ -87,82 +68,40 @@ class PearsonCorrelationLoss(torch.nn.Module):
         r_den = torch.sqrt(torch.sum(xm ** 2, dim=1) * torch.sum(ym ** 2, dim=1) + 1e-8)
         
         r = r_num / r_den
-        return 1 - r 
-
+        return 1 - torch.mean(r)
 
 def train_epoch_combined(
-    noise_filter, model_clip, model_converter, dataloader, optimizer, 
+    model_clip, model_converter, dataloader, optimizer, 
     contrast_loss_fn, mse_loss_fn, pearson_loss_fn, 
     device, scaler,
     loss_weights
 ):
-    noise_filter.train()
     model_clip.train()
     model_converter.train()
 
-    metrics = {k: 0.0 for k in ['total', 'contrast', 'mse', 'pearson', 'mask']}
+    metrics = {k: 0.0 for k in ['total', 'contrast', 'mse', 'pearson']}
 
     progress_bar = tqdm(dataloader, desc="Training (Multi-task)", unit="batch")
     
-    for ecg, ppg, _, ppg_sqm, ppg_sqi, ecg_sqi in progress_bar:
+    for ecg, ppg, _  in progress_bar:
         ecg_target = ecg.to(device).float().unsqueeze(1)
         ppg_input = ppg.to(device).float().unsqueeze(1)
-
-        true_ppg_sqm = ppg_sqm.to(device).float().unsqueeze(1)
-        
-        ecg_sqi = ecg_sqi.to(device).float().view(-1, 1, 1)
         
         optimizer.zero_grad()
         
-        # ======================================================
-        # 🔥 ĐIỂM THAY ĐỔI CỐT LÕI: TÍNH CONFIDENCE WEIGHTS ĐỘNG
-        # ======================================================
-        # confidence_weights bây giờ là một ma trận [Batch, 1, Seq_Len]
-        # Tại mỗi điểm thời gian, trọng số = Chất lượng PPG tại điểm đó (0 hoặc 1) * Chất lượng tổng thể của ECG
-        confidence_weights = true_ppg_sqm * ecg_sqi
-        
         with autocast():
-            masked_ppg, pred_mask, mask_logits = noise_filter(ppg_input)
-            mask_loss = F.binary_cross_entropy_with_logits(mask_logits, true_ppg_sqm)
-            
-            # ======================================================
-            # BƯỚC 2: CHẠY MÔ HÌNH CHÍNH (Với đầu vào đã được làm sạch)
-            # ======================================================
-            logits_per_ecg, ppg_embedding, feature_lists_PPG = model_clip(ecg_target, masked_ppg)
+            logits_per_ecg, ppg_embedding, feature_lists_PPG = model_clip(ecg_target, ppg_input)
             c_loss = contrast_loss_fn(logits_per_ecg, ecg_target)
-            
             predicted_ecg = model_converter(ppg_embedding, feature_lists_PPG) 
 
-            # ======================================================
-            # BƯỚC 3: TÍNH TOÁN LOSS
-            # ======================================================
-            # unweighted_mse có shape [Batch, 1, Seq_Len]
-            unweighted_mse = mse_loss_fn(predicted_ecg, ecg_target) 
-            
-            # Nhân với confidence_weights [Batch, 1, Seq_Len]
-            # Điểm nhiễu sẽ bị nhân với 0, triệt tiêu loss
-            if confidence_weights.shape[-1] != unweighted_mse.shape[-1]:
-                confidence_weights = F.interpolate(
-                    confidence_weights, 
-                    size=unweighted_mse.shape[-1], 
-                    mode='nearest' # Dùng 'nearest' để giữ nguyên giá trị 0/1 của mask
-                )
-            m_loss = torch.sum(unweighted_mse * confidence_weights) / (torch.sum(confidence_weights) + 1e-8)
+            m_loss = mse_loss_fn(predicted_ecg, ecg_target) 
+            p_loss = pearson_loss_fn(predicted_ecg, ecg_target)
+           
 
-            # Pearson Loss vẫn tính trung bình trên cả đoạn tín hiệu
-            # Vì pearson đã trả về shape [Batch], ta nhân với ecg_sqi và trung bình của true_ppg_sqm
-            unweighted_pearson = pearson_loss_fn(predicted_ecg, ecg_target)
-            
-            # Tạo trọng số vô hướng cho mỗi batch để nhân với Pearson Loss
-            # (Lấy trung bình của true_ppg_sqm cho mẫu đó * ecg_sqi)
-            pearson_weights = true_ppg_sqm.mean(dim=-1).view(-1) * ecg_sqi.view(-1)
-            p_loss = torch.sum(unweighted_pearson * pearson_weights) / (torch.sum(pearson_weights) + 1e-8)
 
-            # Tổng hợp toàn bộ Loss
             total_loss = (loss_weights['contrast'] * c_loss + 
                           loss_weights['mse'] * m_loss + 
-                          loss_weights['pearson'] * p_loss +
-                          loss_weights['mask'] * mask_loss)
+                          loss_weights['pearson'] * p_loss)
         
         scaler.scale(total_loss).backward()
         scaler.step(optimizer)
@@ -172,13 +111,11 @@ def train_epoch_combined(
         metrics['contrast'] += c_loss.item() * loss_weights['contrast']
         metrics['mse'] += m_loss.item() * loss_weights['mse']
         metrics['pearson'] += p_loss.item() * loss_weights['pearson']
-        metrics['mask'] += mask_loss.item() * loss_weights['mask']
 
         progress_bar.set_postfix({
             'Total': f"{total_loss.item():.4f}", 
             'MSE': f"{m_loss.item():.4f}",
-            'Pears': f"{p_loss.item():.4f}",
-            'Mask': f"{mask_loss.item():.4f}" 
+            'Pearson': f"{p_loss.item():.4f}",
         })
 
     num_batches = len(dataloader)
@@ -190,25 +127,20 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    train_dataset = PPG2ECG_BUT_Dataset('processed_data/but_train.npz')
-    sample_data = train_dataset[0]
-    ecg_signal = sample_data[0]
-    length_ecg = len(ecg_signal)
+    train_dataset = LoadData('processed_data_single/record_30_train.npz')
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE,
                                shuffle=True, num_workers=4,
-                                 pin_memory=True, collate_fn=quality_aware_collate_fn)
+                                 pin_memory=True)
 
-    # Khởi tạo thêm Bộ lọc nhiễu
-    noise_filter = TemporalNoiseFilter(in_channels=1).to(device)
+
     model_clip = ECGEssembleCLIP(embed_dim=OUTPUT_EMBED_DIM).to(device)
-    model_converter = ECGDecoder_UNet().to(device)
+    model_converter = ECGDecoder_UNet(target_length=2400).to(device)
 
     contrast_loss = FastSoftCLIPLoss(teacher_temp=0.05, student_temp=0.07).to(device)
-    mse_loss = torch.nn.MSELoss(reduction='none').to(device) 
+    mse_loss = torch.nn.MSELoss().to(device) 
     pearson_loss = PearsonCorrelationLoss().to(device)
     
-    # Gom toàn bộ parameter vào Optimizer
-    params_to_optimize = (list(noise_filter.parameters()) + 
+    params_to_optimize = (
                           list(model_clip.parameters()) + 
                           list(model_converter.parameters()))
     optimizer = AdamW(params_to_optimize, lr=LEARNING_RATE, weight_decay=1e-4)
@@ -216,8 +148,7 @@ if __name__ == "__main__":
     loss_weights = {
         'contrast': WEIGHT_CONTRASTIVE, 
         'mse': WEIGHT_L1, 
-        'pearson': WEIGHT_PEARSON,
-        'mask': WEIGHT_MASK
+        'pearson': WEIGHT_PEARSON
     }
 
     scaler = GradScaler()
@@ -225,14 +156,14 @@ if __name__ == "__main__":
     
     history = {
         'Total Loss': [], 'Contrastive Loss': [], 'MSE Loss': [], 
-        'Pearson Loss': [], 'Mask Loss': []
+        'Pearson Loss': []
     }
 
     for epoch in range(1, NUM_EPOCHS + 1):
         start = time.time()
 
         avg_losses = train_epoch_combined(
-            noise_filter, model_clip, model_converter, train_loader, optimizer,
+            model_clip, model_converter, train_loader, optimizer,
             contrast_loss, mse_loss, pearson_loss, 
             device, scaler, loss_weights
         )
@@ -241,13 +172,11 @@ if __name__ == "__main__":
         history['Contrastive Loss'].append(avg_losses['contrast'])
         history['MSE Loss'].append(avg_losses['mse'])
         history['Pearson Loss'].append(avg_losses['pearson'])
-        history['Mask Loss'].append(avg_losses['mask'])
         
         print(f"\nEpoch {epoch}/{NUM_EPOCHS}")
 
         if avg_losses['total'] < best_loss:
             best_loss = avg_losses['total']
-            torch.save(noise_filter.state_dict(), "multitask_noise_filter_best.pth")
             torch.save(model_clip.state_dict(), "multitask_clip_best_model.pth")
             torch.save(model_converter.state_dict(), "multitask_decoder_best_model.pth")
             print(f">> Saved best model at epoch {epoch}")

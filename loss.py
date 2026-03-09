@@ -66,8 +66,6 @@ class FastSoftCLIPLoss(nn.Module):
 
     def compute_target_similarity_gpu(self, ecg_batch):
         """
-        Tính Similarity Matrix cho ECG batch hoàn toàn trên GPU.
-        Giả sử ecg_batch đã được chuẩn hóa (normalized) từ bước Preprocessing.
         Shape: [Batch_Size, 1, Sequence_Length] hoặc [Batch_Size, Sequence_Length]
         """
         if ecg_batch.dim() == 3:
@@ -81,8 +79,8 @@ class FastSoftCLIPLoss(nn.Module):
 
     def forward(self, student_logits, ecg_original):
         """
-        student_logits: output từ model (Cosine similarity matrix của features)
-        ecg_original: Tín hiệu ECG gốc [Batch, Length]
+        student_logits: (Cosine similarity matrix)
+        ecg_original:  [Batch, Length]
         """
         
         # 1. Student Log-Probabilities

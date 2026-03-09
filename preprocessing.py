@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 import time
 import random
 from collections import defaultdict
+from utils import calculate_bsqi, calculate_sq_mask
 # --- (CONSTANTS) ---
 SEED = 44
 PAUSE_TIME = 0.001
@@ -16,8 +17,8 @@ FS = 125
 WINDOW_SECONDS = 10
 STEP_SIZE = 10 
 WINDOW_SAMPLES = int(FS * WINDOW_SECONDS)
-SLICE_LENGTH = 2048
-OVERLAP = 2048
+SLICE_LENGTH = 2400
+OVERLAP = 2400
 THRESHOLD_SIMILARITY = 0.9
 
 def set_seed(seed_value: int):
@@ -28,6 +29,13 @@ def set_seed(seed_value: int):
     print(f"Random seed set to: {seed_value}")
 # ---  (SIGNAL PROCESSING CLASS) ---
 
+def mask_filter(ecg, ppg): 
+    sq_mask_array = calculate_sq_mask(ppg, fs=125)
+    ppg_sqi = np.mean(sq_mask_array)
+    ecg_sqi = calculate_bsqi(ecg, fs=125)
+    if ppg_sqi < 0.3 or ecg_sqi < 0.3:
+        return True
+    return False
 class SignalProcessor:
     """Chứa các hàm lọc, chuẩn hóa và tiền xử lý tín hiệu."""
     def __init__(self, fs: float):
@@ -120,9 +128,7 @@ class SignalProcessor:
 
     def preprocessing_PPG(self, ppg_signal: np.ndarray) -> np.ndarray:
         time = np.arange(len(ppg_signal)) / self.fs
-        # ppg_bpf = self._butter_lowpass(ppg_signal, cutoff=10, order=5)
         ppg_ac = self._dc_removal(time, ppg_signal)
-        # ppg_remove_spikes =  self.remove_large_spikes_auto(ppg_ac, sigma_factor=1)
         ppg_normalized = self.normalize_signal(ppg_ac)
         return ppg_normalized
 
@@ -146,7 +152,7 @@ class DataVisualizer:
     def visualize_specific_segment(self, record_name: str, ppg_segment: np.ndarray, ecg_segment: np.ndarray):
       
         if len(ppg_segment) != len(ecg_segment):
-            print(f"Lỗi: Độ dài PPG ({len(ppg_segment)}) và ECG ({len(ecg_segment)}) không khớp!")
+            print(f"Error: Length of PPG ({len(ppg_segment)}) and ECG ({len(ecg_segment)}) do not match!")
             return
         
         ppg_clean = np.nan_to_num(ppg_segment)
@@ -197,7 +203,6 @@ class DataVisualizer:
         ax.legend(loc="upper right")
         ax.grid(True, linestyle="--", alpha=0.6)
 
-        print("Bắt đầu visualization... Nhấn Ctrl+C để dừng.")
 
         try:
             # 3. (Sliding Window)
@@ -234,13 +239,13 @@ class DataVisualizer:
                     time.sleep(self.pause_time)
                     
         except KeyboardInterrupt:
-            print("\nĐã dừng bởi người dùng (KeyboardInterrupt).")
+            print("\nStopped by user (KeyboardInterrupt).")
         except Exception as e:
-            print(f"Lỗi xảy ra: {e}")
+            print(f"Error occurred: {e}")
         finally:
             plt.close(fig)
             plt.ioff() 
-            print("Visualization hoàn tất.")
+            print("Visualization complete.")
 
 def get_all_records(datapath: str) -> List[str]:
     if not os.path.exists(datapath):
@@ -300,13 +305,16 @@ def load_and_slice_all_signals(datapath: str, record_list: List[str]):
                 start_idx += OVERLAP
                 print("Found NaN values, skipping this segment.")
                 continue
-
+            if mask_filter(ecg_slice, ppg_slice):
+                start_idx += OVERLAP
+                print("Segment failed quality check, skipping.")
+                continue
             record_ppgs.append(ppg_slice)
             record_ecgs.append(ecg_slice)
             record_names.append(record_name)
             start_idx += OVERLAP
         print("Number of segments extracted from this record: ", len(record_ppgs))
-    print("Tổng số segments PPG sau khi cắt: ", len(record_ppgs))
+    print("Total number of PPG segments after slicing: ", len(record_ppgs))
     return record_ppgs, record_ecgs, record_names
 
 def split_segments_and_save_by_record(total_data: Dict[str, Any], save_prefix: str, ratios: Tuple[float, float], seed: int = 42):
@@ -317,12 +325,10 @@ def split_segments_and_save_by_record(total_data: Dict[str, Any], save_prefix: s
     all_records = np.array(total_data["records"])
     all_labels = np.array(total_data["labels"])
     
-    # 1. Phân loại Record theo nhãn (Bản ghi nào là AF, bản ghi nào là Non-AF)
     record_to_label = {}
     unique_records = np.unique(all_records)
     
     for rec in unique_records:
-        # Lấy nhãn xuất hiện nhiều nhất trong bản ghi đó (thường là đồng nhất)
         rec_labels = all_labels[all_records == rec]
         most_frequent_label = np.bincount(rec_labels).argmax()
         record_to_label[rec] = most_frequent_label
@@ -330,7 +336,6 @@ def split_segments_and_save_by_record(total_data: Dict[str, Any], save_prefix: s
     af_records = [r for r, l in record_to_label.items() if l == 1]
     non_af_records = [r for r, l in record_to_label.items() if l == 0]
 
-    # 2. Shuffle và Chia 80/20 riêng biệt cho từng nhóm nhãn
     np.random.shuffle(af_records)
     np.random.shuffle(non_af_records)
 
@@ -344,7 +349,6 @@ def split_segments_and_save_by_record(total_data: Dict[str, Any], save_prefix: s
     train_record_names = train_af + train_non
     test_record_names = test_af + test_non
 
-    # 3. Gom Indices thô
     raw_splits = {
         "train": np.where(np.isin(all_records, train_record_names))[0].tolist(),
         "test": np.where(np.isin(all_records, test_record_names))[0].tolist()
@@ -357,10 +361,9 @@ def split_segments_and_save_by_record(total_data: Dict[str, Any], save_prefix: s
         target = min(len(af_idx), len(non_af_idx))
         
         if target == 0:
-            print(f"⚠️ Tập {split_name} không đủ dữ liệu để cân bằng!")
+            print(f" {split_name} is not enough to balance!")
             continue
 
-        # Cân bằng theo tỷ lệ record đóng góp
         if len(af_idx) > len(non_af_idx):
             final_af = inverse_proportional_sampling(indices, target, all_labels, all_records, 1)
             final_non_af = non_af_idx
@@ -371,7 +374,6 @@ def split_segments_and_save_by_record(total_data: Dict[str, Any], save_prefix: s
         final_indices = final_af + final_non_af
         np.random.shuffle(final_indices)
 
-        # 5. Lưu dữ liệu
         save_path = f"datasets/{save_prefix}_{split_name}.npz"
         save_dict = {
             "ecgs": np.array([total_data["ecgs"][i] for i in final_indices]),
@@ -382,7 +384,7 @@ def split_segments_and_save_by_record(total_data: Dict[str, Any], save_prefix: s
             save_dict["ppgs"] = np.array([total_data["ppgs"][i] for i in final_indices])
 
         np.savez(save_path, **save_dict)
-        print(f"→ Đã lưu {split_name.upper()}: {len(final_indices)} segments (AF: {len(final_af)}, Non-AF: {len(final_non_af)})")
+        print(f"→ Save {split_name.upper()}: {len(final_indices)} segments (AF: {len(final_af)}, Non-AF: {len(final_non_af)})")
 
 def inverse_proportional_sampling(indices, target_count, records, label_indices):
    
@@ -456,32 +458,21 @@ def split_segments_and_save(total_data: Dict[str, Any], save_prefix: str, ratios
             print(f"⚠️ Tập {split_name} không đủ dữ liệu cả 2 lớp!")
             continue
 
-        # # Thực hiện Undersampling theo tỷ lệ cho lớp đa số
-        # if len(af_idx) > len(non_af_idx):
-        #     final_af = inverse_proportional_sampling(current_indices, target, all_labels, all_records, 1)
-        #     final_non_af = non_af_idx
-        # else:
-        #     final_non_af = inverse_proportional_sampling(current_indices, target, all_labels, all_records, 0)
-        #     final_af = af_idx
-
+     
         if len(af_idx) > len(non_af_idx):
-            # AF là lớp đa số -> Rút gọn AF dựa trên Record
             print(f"Undersampling AF class from {len(af_idx)} to {len(non_af_idx)}...")
             target = len(non_af_idx)
             final_af = inverse_proportional_sampling(current_indices, target, all_records, af_idx)
             final_non_af = non_af_idx
         else:
-            # Non-AF là lớp đa số -> Rút gọn Non-AF dựa trên Record
             print(f"Undersampling Non-AF class from {len(non_af_idx)} to {len(af_idx)}...")
             target = len(af_idx)
             final_non_af = inverse_proportional_sampling(current_indices, target, all_records, non_af_idx)
             final_af = af_idx
 
-        # Gộp lại và trộn ngẫu nhiên
         final_combined = final_af + final_non_af
         np.random.shuffle(final_combined)
 
-        # 3. Lưu dữ liệu .npz
         save_path = f"datasets/{save_prefix}_{split_name}.npz"
         save_dict = {
             "ecgs": np.array([total_data["ecgs"][i] for i in final_combined]),
@@ -489,14 +480,66 @@ def split_segments_and_save(total_data: Dict[str, Any], save_prefix: str, ratios
             "records": np.array([total_data["records"][i] for i in final_combined])
         }
         
-        # Thêm PPGs nếu tồn tại trong dữ liệu gốc
         if "ppgs" in total_data:
             save_dict["ppgs"] = np.array([total_data["ppgs"][i] for i in final_combined])
 
         np.savez(save_path, **save_dict)
+
+        print(f" {split_name.upper()}: {len(final_combined)} samples (AF: {len(final_af)}, Non-AF: {len(final_non_af)})")
+        print(f"   Saved at '{save_path}'")
+
+def save_data(total_data: Dict[str, Any], filename: str):
+   
+    os.makedirs("datasets", exist_ok=True)
+    np.random.seed(SEED)
+    
+    all_labels = np.array(total_data["labels"]).flatten()
+    all_records = np.array(total_data["records"]).flatten()
+    all_ecgs = np.array(total_data["ecgs"])
+    
+    current_indices = np.arange(len(all_labels))
+    
+    af_idx = np.where(all_labels == 1)[0]
+    non_af_idx = np.where(all_labels == 0)[0]
+    
+    target = min(len(af_idx), len(non_af_idx))
+    
+    if target == 0:
+        print(f" Dataset is not enough balanced! (AF: {len(af_idx)}, Non-AF: {len(non_af_idx)})")
+        return
+
+    print(f"--- Balance for dataset in file '{filename}' ---")
+
+    if len(af_idx) > len(non_af_idx):
+        print(f"Undersampling AF class from {len(af_idx)} to {len(non_af_idx)}...")
+        final_af = inverse_proportional_sampling(current_indices, target, all_records, af_idx)
+        final_non_af = non_af_idx
+    else:
+        print(f"Undersampling Non-AF class from {len(non_af_idx)} to {len(af_idx)}...")
+        final_non_af = inverse_proportional_sampling(current_indices, target, all_records, non_af_idx)
+        final_af = af_idx
+
+    final_combined = np.concatenate([final_af, final_non_af]).astype(int)
+    np.random.shuffle(final_combined)
+
+    save_dict = {
+        "ecgs": all_ecgs[final_combined],
+        "labels": all_labels[final_combined],
+        "records": all_records[final_combined]
+    }
+    
+    if "ppgs" in total_data:
+        all_ppgs = np.array(total_data["ppgs"])
+        save_dict["ppgs"] = all_ppgs[final_combined]
+
+    save_path = os.path.join("datasets", filename)
+    if not save_path.endswith('.npz'):
+        save_path += '.npz'
         
-        print(f"✅ {split_name.upper()}: {len(final_combined)} mẫu (AF: {len(final_af)}, Non-AF: {len(final_non_af)})")
-        print(f"   Lưu tại '{save_path}'")
+    np.savez_compressed(save_path, **save_dict)
+
+    print(f" Completed:  {len(final_combined)}  ( 1:1 -> AF: {len(final_af)}, Non-AF: {len(final_non_af)})")
+    print(f"   Data saved at: '{save_path}'")
 
 if __name__ == "__main__":
     set_seed(SEED)
@@ -539,11 +582,12 @@ if __name__ == "__main__":
         "records": all_records        
     }
 
-    print(f"Tổng số segments Non-AF: {len(non_af_data_ppg)}")
-    print(f"Tổng số segments AF: {len(af_data_ppg)}")
-    print(f"Tổng cộng dữ liệu sau hợp nhất: {len(total_data['ppgs'])}")
+    print(f"Total number of Non-AF segments: {len(non_af_data_ppg)}")
+    print(f"Total number of AF segments: {len(af_data_ppg)}")
+    print(f"Total data after merging: {len(total_data['ppgs'])}")
+    save_data(total_data, "total_z")
     # split_segments_and_save(total_data, save_prefix="normal_remove24", ratios=(0.8, 0.2))
     # split_segments_and_save_by_record(total_data, save_prefix="record", ratios=(0.8, 0.2))
-    split_segments_and_save(total_data, save_prefix="total_z", ratios=(0.8, 0.2))
+    # split_segments_and_save(total_data, save_prefix="total_z", ratios=(0.8, 0.2))
     # split_segments_and_save_by_record(total_data, save_prefix="total_record_mm", ratios=(0.8, 0.2))
 

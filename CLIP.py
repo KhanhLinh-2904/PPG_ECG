@@ -1,9 +1,7 @@
 import torch
 from torch import nn
-import torch.nn.functional as F
 import math
 from ResNet50 import ResNet50_1D
-from VisionTransformer import SignalTransformer
 
 OUTPUT_EMBED_DIM = 128 
 INPUT_LENGTH = 2400
@@ -32,10 +30,6 @@ class ECGEssembleCLIP(nn.Module):
         else:
             ecg_original_features, featured_ECG, feature_lists_ECG = self.encode_ecg(ecg_original)
             ecg_predicted_features, featured_PPG, feature_lists_PPG = self.encode_ppg(ppg_original)
-            # print("ecg_original_features shape: ", ecg_original_features.shape)
-            # print("ecg_predicted_features shape: ", ecg_predicted_features.shape)
-            # print("featured_PPG shape: ", featured_PPG.shape)
-            # print("featured_ECG shape: ", featured_ECG.shape)
             ecg_original_features = ecg_original_features / ecg_original_features.norm(dim=1, keepdim=True)
             ecg_predicted_features = ecg_predicted_features / ecg_predicted_features.norm(dim=1, keepdim=True)
 
@@ -44,83 +38,6 @@ class ECGEssembleCLIP(nn.Module):
             logits_per_original = logit_scale * ecg_original_features @ ecg_predicted_features.t()
             
             return logits_per_original, featured_PPG, feature_lists_PPG
-
-# class AttentionGate1D(nn.Module):
-#     def __init__(self, g_channels, x_channels, inter_channels):
-#         super().__init__()
-
-#         self.W_g = nn.Sequential(
-#             nn.Conv1d(g_channels, inter_channels, kernel_size=1, bias=False),
-#             nn.BatchNorm1d(inter_channels)
-#         )
-
-#         self.W_x = nn.Sequential(
-#             nn.Conv1d(x_channels, inter_channels, kernel_size=1, bias=False),
-#             nn.BatchNorm1d(inter_channels)
-#         )
-
-#         self.psi = nn.Sequential(
-#             nn.Conv1d(inter_channels, 1, kernel_size=1, bias=True),
-#             nn.Sigmoid()
-#         )
-
-#         self.relu = nn.ReLU(inplace=True)
-
-#     def forward(self, g, x):
-#         """
-#         g: decoder feature (after upsample)
-#         x: encoder skip feature
-#         """
-
-#         if g.size(-1) != x.size(-1):
-#             g = nn.functional.interpolate(g, size=x.size(-1), mode='linear', align_corners=False)
-
-#         g1 = self.W_g(g)
-#         x1 = self.W_x(x)
-
-#         psi = self.relu(g1 + x1)
-#         psi = self.psi(psi)
-
-#         return x * psi
-# class DecoderBlock_UNet(nn.Module):
-#     def __init__(self, in_channels, out_channels, skip_channels=0, scale_factor=2):
-#         super().__init__()
-
-#         self.upsample = nn.Upsample(scale_factor=scale_factor, mode='linear', align_corners=False)
-
-#         self.use_skip = skip_channels > 0
-
-#         if self.use_skip:
-#             self.attention = AttentionGate1D(
-#                 g_channels=in_channels,
-#                 x_channels=skip_channels,
-#                 inter_channels=out_channels
-#             )
-#             total_in = in_channels + skip_channels
-#         else:
-#             total_in = in_channels
-
-#         self.conv = nn.Sequential(
-#             nn.Conv1d(total_in, out_channels, kernel_size=3, padding=1, bias=False),
-#             nn.BatchNorm1d(out_channels),
-#             nn.ReLU(inplace=True),
-
-#             nn.Conv1d(out_channels, out_channels, kernel_size=3, padding=1, bias=False),
-#             nn.BatchNorm1d(out_channels),
-#             nn.ReLU(inplace=True)
-#         )
-
-#     def forward(self, x, skip=None):
-#         x = self.upsample(x)
-
-#         if self.use_skip and skip is not None:
-#             if x.size(-1) != skip.size(-1):
-#                 x = nn.functional.interpolate(x, size=skip.size(-1), mode='linear', align_corners=False)
-
-#             skip = self.attention(x, skip)  # 🔥 attention applied here
-#             x = torch.cat([x, skip], dim=1)
-
-#         return self.conv(x)
 
 
 class DecoderBlock_UNet(nn.Module):
@@ -153,7 +70,7 @@ class DecoderBlock_UNet(nn.Module):
 class ECGDecoder_UNet(nn.Module):
     def __init__(self, bottleneck_channels=2048,  target_length=2400):
         super().__init__()
-        print("bottleneck_channels: ", bottleneck_channels)
+        print("target_length: ", target_length)
         self.target_length = target_length
         # Adapter: Bottleneck 
         self.adapter = nn.Sequential(
@@ -178,7 +95,12 @@ class ECGDecoder_UNet(nn.Module):
 
         # Final Conv: 16 channels -> 1 channel (ECG Signal)
         self.final_conv = nn.Conv1d(16, 1, kernel_size=1)
-        # self.final_activation = nn.Sigmoid()
+        self.refine_conv = nn.Sequential(
+            nn.Conv1d(1, 16, kernel_size=15, padding=7), # Kernel lớn để bao quát ngữ cảnh
+            nn.BatchNorm1d(16),
+            nn.ReLU(),
+            nn.Conv1d(16, 1, kernel_size=1) # Trả về 1 kênh duy nhất
+        )
 
     def forward(self, z, features_list):
         # features_list [f1, f2, f3] 
@@ -201,37 +123,6 @@ class ECGDecoder_UNet(nn.Module):
                 mode='linear', 
                 align_corners=False
             )
-        # x = self.final_activation(x)
+            x = self.refine_conv(x)
         return x
 
-class PPGtoECGConverter(nn.Module):
-    def __init__(self, output_embed_dim=2048):
-        super().__init__()
-        self.encode_ppg = ResNet50_1D(layers=[3, 4, 6, 3], num_classes=output_embed_dim)
-        
-        self.ecg_decoder = ECGDecoder_UNet(bottleneck_channels=output_embed_dim)
-
-    def forward(self, ppg_original):
-        # 1. Encode PPG
-        z_ppg, _, feature_lists_PPG = self.encode_ppg(ppg_original)
-        
-        if z_ppg.dim() == 2:
-            pass 
-            
-        predicted_ecg = self.ecg_decoder(z_ppg, feature_lists_PPG)
-        
-        return predicted_ecg
-    
-
-class FullModelWrapper(torch.nn.Module):
-    def __init__(self, nf, clip, conv):
-        super().__init__()
-        self.nf = nf
-        self.clip = clip
-        self.conv = conv
-    def forward(self, x_ppg, x_ecg):
-        # Giả lập luồng đi của dữ liệu
-        masked_ppg, _, _ = self.nf(x_ppg)
-        logits, embed, features = self.clip(x_ecg, masked_ppg)
-        out = self.conv(embed, features)
-        return out

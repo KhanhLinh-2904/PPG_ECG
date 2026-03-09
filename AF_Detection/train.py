@@ -8,6 +8,8 @@ import os
 import matplotlib.pyplot as plt
 import random
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using devices: {device}")
 def set_seed(seed=42):
     random.seed(seed)
     os.environ['PYTHONHASHSEED'] = str(seed)
@@ -19,16 +21,17 @@ def set_seed(seed=42):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
     
-# Thư mục lưu trữ checkpoint
 CHECKPOINT_DIR = "AF_Detection/checkpoints"
 os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 
-def train_model(train_loader, epochs, model, criterion, optimizer):
+def train_model(train_loader, epochs, model, criterion, optimizer, device):
     train_losses = []
     train_accuracies = []
 
     best_train_acc = 0.0
     best_model_path = os.path.join(CHECKPOINT_DIR, "best_model.pth")
+
+    model.to(device)
 
     for epoch in range(epochs):
         model.train()
@@ -37,6 +40,7 @@ def train_model(train_loader, epochs, model, criterion, optimizer):
 
         for inputs, labels in train_loader:
             # Forward pass
+            inputs, labels = inputs.to(device), labels.to(device)
             outputs = model(inputs)
             loss = criterion(outputs, labels)
 
@@ -45,7 +49,6 @@ def train_model(train_loader, epochs, model, criterion, optimizer):
             loss.backward()
             optimizer.step()
 
-            # Thống kê
             running_loss += loss.item() * inputs.size(0)
             _, predicted = torch.max(outputs, 1)
             total += labels.size(0)
@@ -54,23 +57,20 @@ def train_model(train_loader, epochs, model, criterion, optimizer):
         train_loss = running_loss / len(train_loader.dataset)
         train_acc = 100 * correct / total
 
-        # Lưu lịch sử
         train_losses.append(train_loss)
         train_accuracies.append(train_acc)
 
         print(f"Epoch {epoch+1:03d}/{epochs} | Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.2f}%")
 
-        # Lưu checkpoint hàng kỳ (mỗi epoch)
         checkpoint_path = os.path.join(CHECKPOINT_DIR, f"epoch_{epoch+1:03d}.pth")
         torch.save(model.state_dict(), checkpoint_path)
 
-        # Lưu model tốt nhất dựa trên Train Accuracy
         if train_acc > best_train_acc:
             best_train_acc = train_acc
             epoch_best = epoch + 1
             torch.save(model.state_dict(), best_model_path)
 
-    print(f"\nKết thúc! Model tốt nhất đạt {best_train_acc:.2f}% Train Accuracy tại epoch {epoch_best}.")
+    print(f"\nComplete! Model is good at {best_train_acc:.2f}% Train Accuracy tại epoch {epoch_best}.")
     return train_losses, train_accuracies
 
 
@@ -78,7 +78,6 @@ def plot_metrics(train_losses, train_accs):
     epochs = range(1, len(train_losses) + 1)
     plt.figure(figsize=(12, 5))
 
-    # Biểu đồ Loss
     plt.subplot(1, 2, 1)
     plt.plot(epochs, train_losses, 'b-o', label='Train Loss')
     plt.xlabel('Epoch')
@@ -86,7 +85,6 @@ def plot_metrics(train_losses, train_accs):
     plt.title('Training Loss')
     plt.legend()
 
-    # Biểu đồ Accuracy
     plt.subplot(1, 2, 2)
     plt.plot(epochs, train_accs, 'r-o', label='Train Acc')
     plt.xlabel('Epoch')
@@ -101,17 +99,17 @@ def plot_metrics(train_losses, train_accs):
 
 if __name__ == "__main__":
     set_seed(42)
-    # 1. Load dữ liệu training
-    train_data = np.load('AF_Detection/detect_af_MIMIC_z_train.npz')
-    # Lưu ý: Chỉnh sửa key 'X', 'y' cho đúng với file .npz của bạn
+    # 1. Load training data
+    train_data = np.load('AF_Detection/detect_af_MIT_BIH_train.npz')
+    # Note: Adjust keys 'X', 'y' to match your .npz file
     X_train = torch.tensor(train_data['X'], dtype=torch.float32)
     y_train = torch.tensor(train_data['y'], dtype=torch.long)
 
-    # 2. Tạo DataLoader
+    # 2. DataLoader
     train_dataset = TensorDataset(X_train, y_train)
     train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
 
-    # 3. Khởi tạo Model, Loss, Optimizer
+    # 3. Initialize Model, Loss, Optimizer
     num_classes = len(torch.unique(y_train))
     model = NeuralNetwork(num_classes=num_classes)
     
@@ -119,10 +117,10 @@ if __name__ == "__main__":
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     epochs = 200
 
-    # 4. Huấn luyện
+    # 4. Train
     train_losses, train_accs = train_model(
-        train_loader, epochs, model, criterion, optimizer
+        train_loader, epochs, model, criterion, optimizer, device
     )
 
-    # 5. Vẽ biểu đồ kết quả
+    # 5. Plot results
     plot_metrics(train_losses, train_accs)

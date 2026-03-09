@@ -4,6 +4,7 @@ import scipy.io as scio
 from preprocessing import DataVisualizer, SignalProcessor
 import random
 from typing import Dict, Any, Tuple, List
+from utils import calculate_bsqi, calculate_sq_mask
 SEED = 44
 PAUSE_TIME = 0.001
 FS = 125  
@@ -19,6 +20,13 @@ def set_seed(seed_value: int):
     os.environ["PYTHONHASHSEED"] = str(seed_value)
     print(f"Random seed set to: {seed_value}")
 
+def mask_filter(ecg, ppg): 
+    sq_mask_array = calculate_sq_mask(ppg, fs=125)
+    ppg_sqi = np.mean(sq_mask_array)
+    ecg_sqi = calculate_bsqi(ecg, fs=125)
+    if ppg_sqi < 0.3 or ecg_sqi < 0.3:
+        return True
+    return False
 
 def load_and_slice_all_signals():
     data = scio.loadmat('Records.mat')
@@ -64,7 +72,10 @@ def load_and_slice_all_signals():
             if np.isnan(ppg_slice).any() or np.isnan(ecg_slice).any():
                 start_idx += OVERLAP
                 continue
-
+            if mask_filter(ecg_slice, ppg_slice):
+                start_idx += OVERLAP
+                print("Segment failed quality check, skipping.")
+                continue
             record_ppgs.append(ppg_slice)
             record_ecgs.append(ecg_slice)
             record_names.append(record_name)
@@ -83,14 +94,11 @@ def split_segments_and_save_by_record(total_data: Dict[str, Any], save_prefix: s
  
     record_array = np.array(total_data["records"])
 
-    print(f"--- Bắt đầu chia dữ liệu (Tỉ lệ {train_ratio}:{test_ratio}) ---")
+    print(f"--- Ratio train to test: ( {train_ratio}:{test_ratio}) ---")
 
     for rec_name in unique_records:
         indices = np.where(record_array == rec_name)[0]
         
-        # Xáo trộn các index này nếu bạn muốn dữ liệu ngẫu nhiên hơn (không theo thời gian)
-        # np.random.shuffle(indices) 
-
         num_seg = len(indices)
         split_point = int(num_seg * train_ratio)
 
@@ -119,7 +127,7 @@ def split_segments_and_save_by_record(total_data: Dict[str, Any], save_prefix: s
 
 
         np.savez(save_path, **save_dict)
-        print(f"→ Đã lưu {split_name.upper()}: {len(current_indices)} mẫu tại '{save_path}'")
+        print(f"→ Save {split_name.upper()}: {len(current_indices)} samples at '{save_path}'")
 
     print("Complete!")
 
@@ -131,4 +139,4 @@ if __name__ == "__main__":
         "ecgs": record_ecgs,
         "records": record_names,
     }
-    split_segments_and_save_by_record(total_data, "mimic3_v1", (0.8, 0.2))
+    # split_segments_and_save_by_record(total_data, "mimic3_v1", (0.8, 0.2))

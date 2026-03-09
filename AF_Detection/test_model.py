@@ -9,14 +9,13 @@ from sklearn.metrics import precision_recall_curve, average_precision_score
 
 # ----------- Configuration -----------
 CHECKPOINT_PATH = "AF_Detection/checkpoints/best_model.pth"
-TEST_DATA_PATH = "AF_Detection/detect_af_MIMIC_z_test.npz"
+TEST_DATA_PATH = "AF_Detection/detect_af_deepbeat.npz"
 BATCH_SIZE = 32
 
 # ----------- Load Test Data -----------
 test_data = np.load(TEST_DATA_PATH)
 X_test = torch.tensor(test_data['X'], dtype=torch.float32)
 y_test = torch.tensor(test_data['y'], dtype=torch.long)
-print("y test: ", y_test)
 test_dataset = TensorDataset(X_test, y_test)
 test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE)
 

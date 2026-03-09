@@ -1,17 +1,21 @@
 import os
 import numpy as np
 import wfdb
-import random
 import csv
-from scipy.signal import butter, filtfilt, welch, find_peaks
-from scipy.signal import resample
 import matplotlib.pyplot as plt
 from preprocessing import SignalProcessor
-
-SLICE_LENGTH = 3750  # fixed length of each slice
+from utils import calculate_bsqi, calculate_sq_mask
 
 signal_preprocess_ppg = SignalProcessor(fs=30)
 signal_preprocess_ecg = SignalProcessor(fs=1000)
+
+def mask_filter(ecg, ppg): 
+    sq_mask_array = calculate_sq_mask(ppg, fs=30)
+    ppg_sqi = np.mean(sq_mask_array)
+    ecg_sqi = calculate_bsqi(ecg, fs=1000)
+    if ppg_sqi < 0.3 or ecg_sqi < 0.3:
+        return True
+    return False
 
 def preprocess_PPG(ppg_signal):
     time = np.arange(len(ppg_signal)) / 30
@@ -27,7 +31,6 @@ def preprocess_ECG(ecg_signal):
     return normalized_ecg
 
 def load_signals(datapath):
-    ppgs, ecgs = [], []
     all_data = []
 
     if os.path.isdir(datapath):
@@ -72,14 +75,16 @@ def load_signals(datapath):
         else:
             ppg_signal = ppg_data[:, 0]
 
-        fs_ecg = ecg_record.fs   # usually 1000 Hz
-        fs_ppg = ppg_record.fs   # usually 30 Hz
-        print("shape of signal ECG and PPG: ",  ecg_record.p_signal.shape, ppg_record.p_signal.shape)
-        print(f"Loaded {base_id} - ECG length: {len(ecg_signal)}, PPG length: {len(ppg_signal)}, fs_ecg: {fs_ecg}, fs_ppg: {fs_ppg}")
+        fs_ecg = ecg_record.fs   #  1000 Hz
+        fs_ppg = ppg_record.fs   #  30 Hz
+        # print("shape of signal ECG and PPG: ",  ecg_record.p_signal.shape, ppg_record.p_signal.shape)
+        # print(f"Loaded {base_id} - ECG length: {len(ecg_signal)}, PPG length: {len(ppg_signal)}, fs_ecg: {fs_ecg}, fs_ppg: {fs_ppg}")
         if len(ecg_signal) <=1 or len(ppg_signal) <=1:
             continue
         ecg_signal = preprocess_ECG(ecg_signal)
         ppg_signal = preprocess_PPG(ppg_signal)
+        if mask_filter(ecg_signal, ppg_signal):
+            continue
         all_data.append({
                 'id': base_id,
                 'ecg': ecg_signal,
@@ -91,106 +96,84 @@ def load_signals(datapath):
     return all_data
 
 def visualize_signals(data_dict, duration_sec=10):
-    """
-    Vẽ tín hiệu ECG và PPG trên cùng trục thời gian.
-    """
+   
     ecg = data_dict['ecg']
     ppg = data_dict['ppg']
     fs_e = data_dict['fs_ecg']
     fs_p = data_dict['fs_ppg']
     
-    # Tính toán số lượng mẫu cần lấy dựa trên số giây muốn hiển thị
     n_samples_ecg = int(duration_sec * fs_e)
     n_samples_ppg = int(duration_sec * fs_p)
     
-    # Tạo trục thời gian (Time Vector)
+    ecg_plot = ecg[:n_samples_ecg]
+    ppg_plot = ppg[:n_samples_ppg]
+    
     t_ecg = np.arange(n_samples_ecg) / fs_e
     t_ppg = np.arange(n_samples_ppg) / fs_p
     
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(15, 8), sharex=True)
+    plt.figure(figsize=(15, 7))
     
-    # Vẽ ECG
-    ax1.plot(t_ecg, ecg[:n_samples_ecg], color='#e74c3c', label=f'ECG ({fs_e}Hz)')
-    ax1.set_title(f"Record: {data_dict['id']} - Physiological Signals", fontsize=14)
-    ax1.set_ylabel("Amplitude (mV)")
-    ax1.legend(loc="upper right")
-    ax1.grid(True, linestyle='--', alpha=0.7)
+    plt.plot(t_ppg, ppg_plot, color='blue', label='PPG Segment', linewidth=1.2, alpha=0.8)
+    plt.plot(t_ecg, ecg_plot, color='#d63031', label='ECG Segment', linewidth=1.2, alpha=0.9)
     
-    # Vẽ PPG
-    ax2.plot(t_ppg, ppg[:n_samples_ppg], color='#2980b9', label=f'PPG ({fs_p}Hz)')
-    ax2.set_ylabel("Amplitude (AU)")
-    ax2.set_xlabel("Time (seconds)")
-    ax2.legend(loc="upper right")
-    ax2.grid(True, linestyle='--', alpha=0.7)
+    plt.title(f"Record: {data_dict.get('id', 'mimic_perform')} | Length: {duration_sec:.2f}s ({n_samples_ecg} samples)", fontsize=12)
+    plt.xlabel("Time (seconds)")
+    plt.ylabel("Amplitude")
     
+    plt.grid(True, linestyle='--', alpha=0.6)
+    plt.legend(loc="upper right")
     plt.tight_layout()
     plt.show()
 
 
 def split_and_save(total_data, save_prefix="but"):
-    # 1. Lấy tổng số mẫu
     num_samples = len(total_data["ppgs"])
     
-    # 2. Tạo danh sách chỉ số ngẫu nhiên
     indices = np.random.permutation(num_samples)
     
-    # 3. Tính điểm cắt 80%
     split_idx = int(num_samples * 0.8)
     
-    # 4. Chia chỉ số
     train_idx = indices[:split_idx]
     test_idx = indices[split_idx:]
     
-    # 5. Lưu file
     os.makedirs("processed_data", exist_ok=True)
     
-    # Tính tổng số mẫu ban đầu để làm mốc so sánh
     total_samples = len(total_data["ppgs"])
-    print(f"\n📊 BÁO CÁO THỐNG KÊ TỔNG THỂ (Total: {total_samples} mẫu)")
+    print(f"\nTotal: {total_samples})")
     print("-" * 50)
 
     for name, idxs in [("train", train_idx), ("test", test_idx)]:
-        # 1. Trích xuất dữ liệu
         save_dict = {
             "ppgs": [total_data["ppgs"][i] for i in idxs],
             "ecgs": [total_data["ecgs"][i] for i in idxs],
             "records": [total_data["records"][i] for i in idxs]
         }
         
-        # 2. Tính toán thống kê
         num_samples = len(idxs)
         percentage = (num_samples / total_samples) * 100
-        unique_recs = len(set(save_dict["records"])) # Số lượng bệnh nhân/bản ghi duy nhất
+        unique_recs = len(set(save_dict["records"])) 
         
-        # 3. Lưu file
         save_path = f"processed_data/{save_prefix}_{name}.npz"
         np.savez(save_path, **save_dict)
         
-        # 4. In thông báo chi tiết
-        print(f"📦 Tập {name.upper()}:")
-        print(f"   - Số lượng mẫu: {num_samples} ({percentage:.1f}%)")
-        print(f"   - Số bản ghi duy nhất: {unique_recs}")
-        print(f"   - Lưu tại: {save_path}")
+        print(f" {name.upper()}:")
+        print(f"   - Number samples: {num_samples} ({percentage:.1f}%)")
+        print(f"   - Unique records: {unique_recs}")
+        print(f"   - Saved at: {save_path}")
         print("-" * 50)
 
-    print("✅ Hoàn tất quá trình chia và thống kê dữ liệu!")
+    print("Finished splitting and summarizing data!")
 
 def visualize_3_channel_ppg(record_id, base_path):
-    # 1. Xây dựng đường dẫn chính xác tới tệp PPG
-    # Theo log của bạn, tệp nằm trong thư mục con cùng tên
     ppg_path = os.path.join(base_path, str(record_id), f"{record_id}_PPG")
     
     try:
-        # 2. Đọc bản ghi sử dụng wfdb
         record = wfdb.rdrecord(ppg_path)
-        signal = record.p_signal  # Kích thước dự kiến: (300, 3)
-        fs = record.fs            # Tần số lấy mẫu: 30Hz
+        signal = record.p_signal  # (300, 3)
+        fs = record.fs            # 30Hz
         
-        # 3. Tạo trục thời gian (Time axis)
-        # Công thức: t = n / fs
         time = np.arange(signal.shape[0]) / fs
         
-        # 4. Vẽ biểu đồ 3 kênh
         fig, axes = plt.subplots(3, 1, figsize=(12, 10), sharex=True)
         colors = ['#000000', '#000000', '#000000']  # Neon Pink, Cyan, Electric Purple
         labels = ['Channel 1', 'Channel 2', 'Channel 3']
@@ -207,29 +190,23 @@ def visualize_3_channel_ppg(record_id, base_path):
         plt.tight_layout()
         plt.show()
         
-        print(f"✅ Successfully loaded record {record_id}")
-        print(f"📈 Signal shape: {signal.shape}, Sampling Rate: {fs}Hz")
+        print(f"Successfully loaded record {record_id}")
+        print(f"Signal shape: {signal.shape}, Sampling Rate: {fs}Hz")
 
     except Exception as e:
-        print(f"❌ Error loading file {record_id}: {e}")
+        print(f"Error loading file {record_id}: {e}")
 
 def plot_single_channel_ppg(record_id, base_path):
-    # Đường dẫn tới tệp PPG (Cấu trúc: base_path/100001/100001_PPG)
     ppg_path = os.path.join(base_path, str(record_id), f"{record_id}_PPG")
     
     try:
-        # 1. Đọc bản ghi
         record = wfdb.rdrecord(ppg_path)
-        
-        # 2. Lấy tín hiệu (Shape trong log là (1, 300), wfdb trả về (300, 1))
-        signal = record.p_signal.flatten() # Chuyển về mảng 1D để vẽ
+        signal = record.p_signal.flatten() 
         signal_ppg = preprocess_PPG(signal)
-        fs = record.fs # Tần số lấy mẫu (30Hz)
+        fs = record.fs 
         
-        # 3. Tạo trục thời gian
         time = np.arange(len(signal)) / fs
         
-        # 4. Vẽ biểu đồ
         plt.figure(figsize=(12, 4))
         plt.plot(time, signal_ppg, color='#2ecc71', linewidth=1.5)
         
@@ -238,16 +215,16 @@ def plot_single_channel_ppg(record_id, base_path):
         plt.ylabel("Amplitude")
         plt.grid(True, linestyle='--', alpha=0.7)
         
-        # Giới hạn trục X đúng 10 giây theo dữ liệu của bạn
         plt.xlim(0, 10) 
         
         plt.tight_layout()
         plt.show()
         
-        print(f"✅ Loaded {record_id}: {len(signal)} samples at {fs}Hz ({len(signal)/fs}s)")
+        print(f" Loaded {record_id}: {len(signal)} samples at {fs}Hz ({len(signal)/fs}s)")
 
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f" Error: {e}")
+
 if __name__ == "__main__":
     all_ppgs, all_ecgs, all_records = [], [], []
     dataset = "/home/linhhima/Pre_processing_data/brno-university-of-technology-smartphone-ppg-database-but-ppg-2.0.0/"
@@ -265,9 +242,7 @@ if __name__ == "__main__":
                 value = row[1] 
                 if value == "1":
                     filelist.append(key)
-    # print("Quality Notation Dictionary:")
-    # for key, value in quality_notation.items():
-    #     print(f"  {key}: {value}")
+   
     print("total number of files: ", len(filelist))
     for file in filelist:
         name_file = os.path.join(dataset, file)
@@ -283,7 +258,7 @@ if __name__ == "__main__":
         "ecgs": all_ecgs,  
         "records": all_records        
     }
-    split_and_save(total_data, save_prefix="but")
+    # split_and_save(total_data, save_prefix="but")
     # DATASET_DIR = "/home/linhhima/Pre_processing_data/brno-university-of-technology-smartphone-ppg-database-but-ppg-2.0.0/"
     # RECORD_ID = "138032"
 

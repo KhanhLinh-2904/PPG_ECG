@@ -8,7 +8,7 @@ from scipy.signal import resample
 def detect_ecg_features(signal, sampling_rate=250):
     rpeaks_indices = ecg.hamilton_segmenter(signal=signal, sampling_rate=sampling_rate)['rpeaks']
    
-    all_peaks, _ = find_peaks(signal, distance=sampling_rate*0.2) # Khoảng cách tối thiểu giữa các đỉnh ~200ms
+    all_peaks, _ = find_peaks(signal, distance=sampling_rate*0.2) 
     
     all_valleys, _ = find_peaks(-signal, distance=sampling_rate*0.2)
 
@@ -40,6 +40,71 @@ def calculate_bsqi(ecg_signal, fs, tolerance_ms=150):
     if total_unique_peaks == 0: return 0.0
     return agreed_peaks / total_unique_peaks
 
+
+def visualize_bsqi_steps(ecg_signal, fs, tolerance_ms=150, record_name="ECG Sample"):
+    _, info_hamilton = nk.ecg_peaks(ecg_signal, sampling_rate=fs, method="hamilton2002")
+    peaks_hamilton = np.array(info_hamilton["ECG_R_Peaks"])
+    
+    _, info_zong = nk.ecg_peaks(ecg_signal, sampling_rate=fs, method="zong2003")
+    peaks_zong = np.array(info_zong["ECG_R_Peaks"])
+    
+    tolerance_samples = int((tolerance_ms / 1000.0) * fs)
+    agreed_peaks = []
+    matched_in_alg2 = set()
+    
+    for p1 in peaks_hamilton:
+        matches = np.where((peaks_zong >= p1 - tolerance_samples) & 
+                           (peaks_zong <= p1 + tolerance_samples))[0]
+        for m in matches:
+            if m not in matched_in_alg2:
+                agreed_peaks.append(p1) 
+                matched_in_alg2.add(m)
+                break
+    
+    agreed_count = len(agreed_peaks)
+    total_unique = len(peaks_hamilton) + len(peaks_zong) - agreed_count
+    bsqi_score = agreed_count / total_unique if total_unique > 0 else 0
+    
+    t = np.arange(len(ecg_signal)) / fs
+    duration = len(ecg_signal) / fs
+    
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(15, 10), sharex=True)
+    plt.subplots_adjust(hspace=0.3)
+    
+    ax1.plot(t, ecg_signal, color='gray', alpha=0.4, label='ECG Signal')
+    ax1.scatter(peaks_hamilton/fs, ecg_signal[peaks_hamilton], 
+                color='red', marker='o', s=80, label='Hamilton Peaks (Alg 1)', zorder=3)
+    ax1.scatter(peaks_zong/fs, ecg_signal[peaks_zong], 
+                color='blue', marker='x', s=80, label='Zong Peaks (Alg 2)', zorder=3)
+    ax1.set_title(f"Step 1: Peak Detection from Two Different Algorithms\nRecord: {record_name}")
+    ax1.legend(loc='upper right')
+    ax1.set_ylabel("Amplitude")
+
+    ax2.plot(t, ecg_signal, color='black', linewidth=1, alpha=0.6)
+    
+    first_label = True
+    for p in peaks_hamilton:
+        ax2.axvspan((p - tolerance_samples)/fs, (p + tolerance_samples)/fs, 
+                    color='yellow', alpha=0.2, label='Tolerance Window' if first_label else "")
+        first_label = False
+        
+    agreed_peaks = np.array(agreed_peaks)
+    ax2.scatter(agreed_peaks/fs, ecg_signal[agreed_peaks], 
+                color='green', marker='P', s=120, label='Agreed Peaks (Matched)', zorder=5)
+    
+    missed_hamilton = [p for p in peaks_hamilton if p not in agreed_peaks]
+    ax2.scatter(np.array(missed_hamilton)/fs, ecg_signal[missed_hamilton], 
+                color='orange', marker='v', s=100, label='Unmatched Alg 1', zorder=4)
+
+    ax2.set_title(f"Step 2: Matching with Tolerance $\gamma = {tolerance_ms}ms$\nbSQI = {agreed_count} / ({len(peaks_hamilton)} + {len(peaks_zong)} - {agreed_count}) = {bsqi_score:.4f}")
+    ax2.set_xlabel("Time (seconds)")
+    ax2.set_ylabel("Amplitude")
+    ax2.legend(loc='upper right')
+    
+    zoom_start = max(0, duration/2 - 2.5)
+    ax2.set_xlim(zoom_start, zoom_start + 5)
+    
+    plt.show()
 def calculate_sq_mask(ppg_signal, fs):
 
     N = len(ppg_signal)
@@ -86,31 +151,25 @@ def calculate_sq_mask(ppg_signal, fs):
     else:
         T_cx = np.zeros(template_length)
 
-    # Bước 5 & 6: Tính Pearson Correlation cho từng đoạn và gán vào Mask (M)
-    M = np.zeros(N) # Khởi tạo mặt nạ toàn số 0 (Giải quyết luôn phần Padding M_0 và M_h)
+    M = np.zeros(N) 
     
     for seg in segments:
         S_prime = seg['resampled']
         T_prime = T_cc if seg['type'] == 'cc' else T_cx
         
-        # Tránh lỗi chia cho 0 nếu template là đường thẳng
         if np.std(S_prime) == 0 or np.std(T_prime) == 0:
             corr = 0
         else:
-            # Tính Pearson Correlation Coefficient
             corr = np.corrcoef(S_prime, T_prime)[0, 1]
             
-        # Gán giá trị corr này cho toàn bộ chiều dài của đoạn (J_seg)
         M[seg['start']:seg['end']] = corr
         
-    # Bước 7: Chuẩn hóa Min-Max (Min-Max Normalization) về [0, 1]
     m_min, m_max = np.min(M), np.max(M)
     if m_max > m_min:
         M_norm = (M - m_min) / (m_max - m_min)
     else:
         M_norm = np.zeros(N)
         
-    # Bước 8: Làm mượt bằng Moving Average (300 points)
     window = np.ones(smoothing_window) / smoothing_window
     M_smoothed = np.convolve(M_norm, window, mode='same')
     
@@ -124,7 +183,6 @@ def calculate_ppg_sqi(ppg_signal, fs, method='mean', threshold=0.5):
     
     zero_crossings = np.where(np.diff(np.sign(signal_centered)))[0]
     
-    # Nếu tín hiệu quá rác không tìm thấy đủ điểm cắt không, trả về SQI = 0.0
     if len(zero_crossings) < 2:
         return 0.0
         
@@ -185,99 +243,101 @@ def calculate_ppg_sqi(ppg_signal, fs, method='mean', threshold=0.5):
     M_smoothed = np.convolve(M_norm, window, mode='same')
    
     if method == 'mean':
-        # Tính trung bình cộng của toàn bộ mặt nạ
         sqi_value = np.mean(M_smoothed)
         
     elif method == 'threshold':
-        # Tính tỷ lệ phần trăm thời gian mà mặt nạ vượt qua ngưỡng an toàn
         sqi_value = np.sum(M_smoothed > threshold) / N
         
     else:
         sqi_value = np.mean(M_smoothed)
         
     return float(sqi_value)
-if __name__ == "__main__":
 
-    # fs = 250  
-    # duration = 10  
-    # clean_ecg = nk.ecg_simulate(duration=duration, sampling_rate=fs, heart_rate=70)
 
+def visualize_ppg_sqi_steps(ppg_signal, fs, record_name="Unknown"):
+   
+    N = len(ppg_signal)
+    t = np.arange(N) / fs
+    signal_centered = ppg_signal - np.mean(ppg_signal)
+    zero_crossings = np.where(np.diff(np.sign(signal_centered)))[0]
     
-    # noise = nk.signal_distort(clean_ecg, sampling_rate=fs, 
-    #                         noise_amplitude=0.2, 
-    #                         artifacts_amplitude=0.1, 
-    #                         artifacts_frequency=0.5)
-    # noisy_ecg = clean_ecg + noise
+    fig = plt.figure(figsize=(15, 12))
+    plt.suptitle(f"Record: {record_name}", 
+                 fontsize=16, fontweight='bold', y=0.95)
 
-    # _, info_hamilton = nk.ecg_peaks(noisy_ecg, sampling_rate=fs, method="pantompkins1985")
-    # peaks_hamilton = info_hamilton["ECG_R_Peaks"]
+    ax1 = plt.subplot(3, 1, 1)
+    ax1.plot(t, signal_centered, label='Centered PPG', color='black', alpha=0.7)
+    ax1.axhline(0, color='red', linestyle='--', alpha=0.5)
+    ax1.scatter(t[zero_crossings], signal_centered[zero_crossings], color='red', s=25, label='Zero Crossings')
+    ax1.set_title("Step 1 & 2: Signal Centering and Zero-Crossing Detection", loc='left')
+    ax1.set_ylabel("Amplitude")
+    ax1.legend(loc='upper right')
+    ax1.grid(True, linestyle=':', alpha=0.6)
 
-    # _, info_zong = nk.ecg_peaks(noisy_ecg, sampling_rate=fs, method="zong2003")
-    # peaks_zong = info_zong["ECG_R_Peaks"]
+    template_length = 1 * fs
+    S_cc, S_cx = [], []
+    segments = []
+    
+    for i in range(len(zero_crossings) - 1):
+        start, end = zero_crossings[i], zero_crossings[i+1]
+        seg_data = signal_centered[start:end]
+        resampled_seg = resample(seg_data, template_length)
+        
+        seg_type = 'cc' if np.mean(seg_data) < 0 else 'cx'
+        if seg_type == 'cc': S_cc.append(resampled_seg)
+        else: S_cx.append(resampled_seg)
+        segments.append({'start': start, 'end': end, 'resampled': resampled_seg, 'type': seg_type})
 
-    # bsqi_score = calculate_bsqi(noisy_ecg, fs)
-    # print("-" * 40)
-    # print(f"Số đỉnh Hamilton bắt được: {len(peaks_hamilton)}")
-    # print(f"Số đỉnh Zong (wqrs) bắt được: {len(peaks_zong)}")
-    # print(f"Điểm chất lượng bSQI: {bsqi_score:.2f}")
-    # print("-" * 40)
+    T_cc = np.mean(S_cc, axis=0) if S_cc else np.zeros(template_length)
+    T_cx = np.mean(S_cx, axis=0) if S_cx else np.zeros(template_length)
 
-    # plt.figure(figsize=(12, 6))
-    # plt.plot(noisy_ecg, label="Noisy ECG Signal", color='lightgrey')
+    ax2 = plt.subplot(3, 2, 3)
+    for s in S_cc: ax2.plot(s, color='blue', alpha=0.1)
+    ax2.plot(T_cc, color='blue', linewidth=3, label='Concave Template')
+    ax2.set_title("Step 3: Concave Templates (cc)")
+    ax2.legend()
 
-    # plt.scatter(peaks_hamilton, noisy_ecg[peaks_hamilton], 
-    #             color='blue', s=100, label='Hamilton (DF)', zorder=3)
+    ax3 = plt.subplot(3, 2, 4)
+    for s in S_cx: ax3.plot(s, color='orange', alpha=0.1)
+    ax3.plot(T_cx, color='orange', linewidth=3, label='Convex Template')
+    ax3.set_title("Step 4: Convex Templates (cx)")
+    ax3.legend()
 
-    # plt.scatter(peaks_zong, noisy_ecg[peaks_zong], 
-    #             color='red', marker='x', s=100, label='Zong 2003 (LT)', zorder=4)
+    M = np.zeros(N)
+    for seg in segments:
+        T_prime = T_cc if seg['type'] == 'cc' else T_cx
+        if np.std(seg['resampled']) > 0 and np.std(T_prime) > 0:
+            corr = np.corrcoef(seg['resampled'], T_prime)[0, 1]
+            M[seg['start']:seg['end']] = corr
 
-    # plt.title(f"So sánh dò đỉnh R: Hamilton vs Zong 2003 (bSQI = {bsqi_score:.2f})")
-    # plt.xlabel("Samples")
-    # plt.ylabel("Amplitude")
-    # plt.legend(loc="upper right")
-    # plt.xlim(0, fs * 5) 
-    # plt.tight_layout()
-    # plt.show()
+    M_norm = (M - np.min(M)) / (np.max(M) - np.min(M)) if np.max(M) > np.min(M) else M
+    
+    overall_sqi = np.mean(M_norm)
 
-    fs = 100  # Tần số lấy mẫu: 100 Hz
-    t = np.linspace(0, 30, 30 * fs)  # Tạo mảng thời gian 30 giây (3000 điểm)
+    ax4 = plt.subplot(3, 1, 3)
+    ax4.plot(t, M_norm, label='Raw Quality Mask', color='darkgreen', linewidth=2)
+    ax4.fill_between(t, 0, M_norm, color='green', alpha=0.15)
+    
+    ax4.axhline(overall_sqi, color='blue', linestyle='--', linewidth=1.5, 
+                label=f'Global Average SQI ({overall_sqi:.4f})')
+    
+    ax4.axhline(0.5, color='red', linestyle=':', label='Threshold 0.5')
+    
+    ax4.set_title(f"Final Step: Raw Quality Estimation (Mean SQI: {overall_sqi:.4f})", loc='left')
+    ax4.set_xlabel("Time (seconds)")
+    ax4.set_ylabel("Quality Score")
+    ax4.set_ylim(0, 1.1)
+    ax4.legend(loc='upper right')
+    ax4.grid(True, linestyle=':', alpha=0.6)
 
-    # Tạo tín hiệu PPG sạch giả lập (tổng hợp từ 2 sóng sin tạo hình dáng nhịp tim)
-    clean_ppg = np.sin(2 * np.pi * 1.2 * t) + 0.4 * np.cos(2 * np.pi * 2.4 * t)
-
-    # Cố tình tạo nhiễu cực mạnh từ giây 10 đến giây 15 (mô phỏng vung tay)
-    noisy_ppg = np.copy(clean_ppg)
-    noise_start, noise_end = 10 * fs, 15 * fs
-    noisy_ppg[noise_start:noise_end] += np.random.normal(0, 1.5, noise_end - noise_start)
-
-    # Gọi hàm tính SQ-Mask (Cửa sổ 300 điểm tương đương 3 giây làm mượt)
-    sq_mask = calculate_sq_mask(noisy_ppg,fs)
-    segment_sqi = np.mean(sq_mask)
-    segment_sqi = np.sum(sq_mask > 0.5) / len(sq_mask)
-    print("segment_sqi:", segment_sqi)
-    # ==========================================
-    # 3. TRỰC QUAN HÓA KẾT QUẢ
-    # ==========================================
-    fig, ax1 = plt.subplots(figsize=(12, 6))
-
-    # Vẽ đường PPG (Trục Y bên trái)
-    ax1.plot(t, noisy_ppg, color='steelblue', alpha=0.7, label='Tín hiệu PPG (Nhiễu giây 10-15)')
-    ax1.set_xlabel('Thời gian (giây)')
-    ax1.set_ylabel('Biên độ PPG', color='steelblue')
-    ax1.tick_params(axis='y', labelcolor='steelblue')
-
-    # Vẽ đường SQ-Mask (Trục Y bên phải)
-    ax2 = ax1.twinx()
-    ax2.plot(t, sq_mask, color='red', linewidth=2.5, label='Chỉ số SQ-Mask (0=Rác, 1=Sạch)')
-    ax2.set_ylabel('Độ tin cậy của tín hiệu (SQ-Mask)', color='red', fontweight='bold')
-    ax2.tick_params(axis='y', labelcolor='red')
-    ax2.set_ylim(-0.1, 1.1)
-
-    # Thêm ghi chú
-    plt.axvspan(10, 15, color='gray', alpha=0.2, label='Vùng bị nhiễu động')
-    fig.tight_layout()
-    plt.title("Đánh giá tín hiệu PPG động bằng SQ-Mask (Template Matching)", fontsize=14)
-    ax1.legend(loc='upper left')
-    ax2.legend(loc='upper right')
-    plt.grid(True, linestyle='--', alpha=0.5)
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95]) 
     plt.show()
+
+if __name__ == "__main__":
+    path = "datasets/total_z_test.npz"
+    data = np.load(path, allow_pickle=True)
+    ecg_signal = data['ecgs'][2]
+    ppg_signal = data['ppgs'][2]  
+    record_name = data['records'][2]
+    # visualize_ppg_sqi_steps(ppg_signal, fs=125, record_name=record_name)
+    visualize_bsqi_steps(ecg_signal=ecg_signal, fs=125, record_name=record_name)
