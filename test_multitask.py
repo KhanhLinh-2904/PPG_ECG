@@ -3,7 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
 from load_data import LoadData
-from CLIP import PPG2ECG_Model, stockwell_transform_v2
+from CLIP import ECGDecoder_UNet, ECGEssembleCLIP
 import random
 import os
 from metric import calculate_cosine_similarity, calculate_dtw_distance, calculate_metrics
@@ -14,10 +14,12 @@ SEED = 40
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 BATCH_SIZE = 16 
 INPUT_LENGTH = 2400
-TARGET_LENGTH = 2400
-TEST_DATA_PATH = 'processed_data/mimic3_v1_2400_test.npz'
-MODEL_PATH = "PPG2ECG_SOTA_best_model.pth"
-
+OUTPUT_EMBED_DIM = 128
+TEST_DATA_PATH = 'processed_data/mimic3_v1_test.npz'
+CLIP_MODEL_PATH = "multitask_clip_best_model_mimiciii.pth"
+DECODER_MODEL_PATH = "multitask_decoder_best_model_mimiciii.pth"
+ppg_sqi_thresh = 0.3
+ecg_sqi_thresh = 0.3
 def set_seed(seed):
     random.seed(seed)
     np.random.seed(seed)
@@ -28,35 +30,27 @@ def set_seed(seed):
 def load_models():
     print(f"Loading models on {DEVICE}...")
     
-    model = PPG2ECG_Model().to(DEVICE)
+    model_clip = ECGEssembleCLIP(embed_dim=OUTPUT_EMBED_DIM).to(DEVICE)
+    model_converter = ECGDecoder_UNet(bottleneck_channels=2048, target_length=2400).to(DEVICE)
 
     if torch.cuda.is_available():
-       weights = torch.load(MODEL_PATH)
+        clip_weights = torch.load(CLIP_MODEL_PATH)
+        decoder_weights = torch.load(DECODER_MODEL_PATH)
     else:
-        weights = torch.load(MODEL_PATH, map_location='cpu')
+        clip_weights = torch.load(CLIP_MODEL_PATH, map_location='cpu')
+        decoder_weights = torch.load(DECODER_MODEL_PATH, map_location='cpu')
 
-    model.load_state_dict(weights)
-    model.eval()
+    model_clip.load_state_dict(clip_weights)
+    model_converter.load_state_dict(decoder_weights)
     
-    return  model
-
-def batch_stockwell_transform(signals_1d_tensor, fs, fmin=0.5, fmax=20.0):
-    device = signals_1d_tensor.device
-    signals_np = signals_1d_tensor.detach().cpu().numpy()
-    batch_st = []
+    model_clip.eval()
+    model_converter.eval()
     
-    for i in range(signals_np.shape[0]):
-        st_matrix = stockwell_transform_v2(signals_np[i], fs, fmin, fmax)
-        real_part = np.real(st_matrix)
-        imag_part = np.imag(st_matrix)
-        stacked = np.stack((real_part, imag_part), axis=0)
-        batch_st.append(stacked)
-        
-    return torch.tensor(np.array(batch_st), dtype=torch.float32).to(device)
+    return  model_clip, model_converter
 
 def save_ecg_reconstruction(output_path = "AF_Detection/ecg_reconstructions.npz"):
     set_seed(SEED)
-    model = load_models()
+    model_clip, model_converter = load_models()
     all_predicted_ecgs = []
     all_original_ppgs = []
     all_labels = []
@@ -74,7 +68,8 @@ def save_ecg_reconstruction(output_path = "AF_Detection/ecg_reconstructions.npz"
         for i, (ecg, ppg, record_names, label) in enumerate(test_loader):
             ppg_input = ppg.to(DEVICE).float().unsqueeze(1)
             print("record name: ", record_names)
-            predicted_ecg = model( ppg_input, None)
+            ppg_embedding, feature_lists_PPG = model_clip(None, ppg_input)
+            predicted_ecg = model_converter(ppg_embedding, feature_lists_PPG)
             all_predicted_ecgs.append(predicted_ecg.squeeze(1).cpu().numpy())
             all_original_ppgs.append(ppg.cpu().numpy())
             all_labels.append(label.cpu().numpy())
@@ -129,7 +124,7 @@ def visualize_results(ppg, ecg_true, ecg_pred, sample_idx, record_name):
 
 def run_visualization():
     set_seed(SEED)
-    model = load_models()
+    model_clip, model_converter = load_models()
     seen_records = set()
 
     try:
@@ -142,14 +137,15 @@ def run_visualization():
     print("Running inference for visualization...")
     with torch.no_grad():
         for i, (ecg, ppg, record_names) in enumerate(test_loader):
-            ppg_input = ppg.view(-1, 2400).to(DEVICE)
-            ppg_st_2d = batch_stockwell_transform(ppg_input, fs=125, fmin=0.0, fmax=15.0)
-            ecg_reconstruction  = model(ppg_st_2d, None)
+            ppg_input = ppg.to(DEVICE).float().unsqueeze(1)
+            
+            ppg_embedding, feature_lists_PPG = model_clip(None, ppg_input)
+            predicted_ecg = model_converter(ppg_embedding, feature_lists_PPG)
 
             # np.atleast_2d vẫn được giữ lại để đảm bảo không lỗi khi batch size = 1
             ppg_np = np.atleast_2d(ppg_input.cpu().squeeze().numpy())
             ecg_true_np = np.atleast_2d(ecg.cpu().squeeze().numpy())
-            ecg_pred_np = np.atleast_2d(ecg_reconstruction.cpu().squeeze().numpy())
+            ecg_pred_np = np.atleast_2d(predicted_ecg.cpu().squeeze().numpy())
 
             for idx in range(ppg_np.shape[0]):
                 current_rec_name = record_names[idx]
@@ -165,7 +161,7 @@ def run_visualization():
                     seen_records.add(current_rec_name)
 
 def run_loss():
-    model = load_models()
+    model_clip, model_converter = load_models()
     test_dataset = LoadData(TEST_DATA_PATH)
     test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
 
@@ -174,12 +170,13 @@ def run_loss():
     print("Calculating Metrics...")
     with torch.no_grad():
         for i, (ecg, ppg, record_names) in enumerate(test_loader):
-            ppg_input = ppg.view(-1, 2400).to(DEVICE)
-            ppg_st_2d = batch_stockwell_transform(ppg_input, fs=125, fmin=0.0, fmax=15.0)
-            ecg_reconstruction  = model(ppg_st_2d, None)
+            ppg_input = ppg.to(DEVICE).float().unsqueeze(1)
+            
+            ppg_embedding, feature_lists_PPG = model_clip(None, ppg_input)
+            predicted_ecg = model_converter(ppg_embedding, feature_lists_PPG)
 
             ecg_true_np = np.atleast_2d(ecg.cpu().squeeze().numpy())
-            ecg_pred_np = np.atleast_2d(ecg_reconstruction.cpu().squeeze().numpy())
+            ecg_pred_np = np.atleast_2d(predicted_ecg.cpu().squeeze().numpy())
 
             for b in range(ecg_true_np.shape[0]):
                 true_s = ecg_true_np[b]
@@ -205,7 +202,7 @@ def run_loss():
 
 def save_ecg_reconstruction_deepbeat(output_path = "AF_Detection/ecg_deepbeat_reconstructions.npz"):
     set_seed(SEED)
-    model = load_models()
+    model_clip, model_converter = load_models()
     all_predicted_ecgs = []
     all_original_ppgs = []
     all_labels = []
@@ -221,7 +218,8 @@ def save_ecg_reconstruction_deepbeat(output_path = "AF_Detection/ecg_deepbeat_re
     with torch.no_grad():
         for i, ( ppg, label) in enumerate(test_loader):
             ppg_input = ppg.to(DEVICE).float().unsqueeze(1)
-            predicted_ecg = model( ppg_input, None)
+            ppg_embedding, feature_lists_PPG = model_clip(None, ppg_input)
+            predicted_ecg = model_converter(ppg_embedding, feature_lists_PPG)
             all_predicted_ecgs.append(predicted_ecg.squeeze(1).cpu().numpy())
             all_original_ppgs.append(ppg.cpu().numpy())
             all_labels.append(label.cpu().numpy())
