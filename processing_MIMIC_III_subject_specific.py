@@ -8,8 +8,8 @@ from utils import calculate_bsqi, calculate_sq_mask
 
 SEED = 44
 FS = 125  
-SLICE_LENGTH = 2400
-OVERLAP = 2400
+SLICE_LENGTH = 625
+OVERLAP = 625
 TRAIN_RATIO = 0.8
 
 def set_seed(seed_value: int):
@@ -43,7 +43,7 @@ def load_and_slice_single_record(target_index: int) -> Tuple[List, List, List]:
     
     ppg_p = processor.preprocessing_PPG(ppg)
     ecg_p = processor.preprocessing_ECG(ecg)
-    # ppg_p = processor.align_signals_cross_correlation(ecg_p, ppg_p)[0]
+    ppg_p = processor.align_signals_cross_correlation(ecg_p, ppg_p)[0]
 
     min_len = min(len(ppg_p), len(ecg_p))
     start_idx = 0

@@ -38,7 +38,12 @@ def load_and_slice_all_signals():
     visualizer = DataVisualizer(fs=Fs, window_seconds=WINDOW_SECONDS, 
                                 pause_time=PAUSE_TIME, step_size=STEP_SIZE)
     processor = SignalProcessor(fs=FS)
-    
+    stats = {
+        'total_raw': 0,           # Tổng số segment cắt ra ban đầu
+        'nan_flat_removed': 0,    # Số bị loại do NaN hoặc tín hiệu phẳng
+        'sqi_removed': 0,         # Số bị loại do chất lượng kém (SQI)
+        'final_valid': 0          # Số segment hợp lệ cuối cùng
+    }
     for index in range(records.size):
         ecg = records[index, 0]['ecg_II'][:, 0]
         ppg = records[index, 0]['ppg'][:, 0]
@@ -64,23 +69,39 @@ def load_and_slice_all_signals():
         start_idx = 0
     
         while start_idx + SLICE_LENGTH <= min_len:
-           
+            stats['total_raw'] += 1
             ppg_slice = ppg_preprocessed[start_idx:start_idx + SLICE_LENGTH]
             ecg_slice = ecg_preprocessed[start_idx:start_idx + SLICE_LENGTH]
           
            
             if np.isnan(ppg_slice).any() or np.isnan(ecg_slice).any():
+                stats['nan_flat_removed'] += 1
                 start_idx += OVERLAP
                 continue
             if mask_filter(ecg_slice, ppg_slice):
+                stats['sqi_removed'] += 1
                 start_idx += OVERLAP
                 print("Segment failed quality check, skipping.")
                 continue
             record_ppgs.append(ppg_slice)
             record_ecgs.append(ecg_slice)
             record_names.append(record_name)
+            stats['final_valid'] += 1
             start_idx += OVERLAP
-    print("Tổng số segments PPG sau khi cắt: ", len(record_ppgs))
+
+    # # --- IN BÁO CÁO TỔNG KẾT ---
+    # print("\n" + "="*50)
+    # print("BÁO CÁO THỐNG KÊ TIỀN XỬ LÝ (PROCESSING SUMMARY)")
+    # print("="*50)
+    # print(f"1. Tổng segment ban đầu:            {stats['total_raw']}")
+    # print(f"2. Bị loại bởi NaN/Flat Line:       {stats['nan_flat_removed']}")
+    # print(f"3. Bị loại bởi chất lượng SQI:      {stats['sqi_removed']}")
+    # print("-" * 50)
+    # print(f"KẾT QUẢ CUỐI CÙNG:")
+    # print(f"   - Tổng mẫu hợp lệ:               {stats['final_valid']}")
+    # print(f"   - Tỷ lệ giữ lại:                 {stats['final_valid']/max(1,stats['total_raw']):.2%}")
+    # print("="*50)
+    # print("Tổng số segments PPG sau khi cắt: ", len(record_ppgs))
     return record_ppgs, record_ecgs, record_names
 
 def split_segments_and_save_by_record(total_data: Dict[str, Any], save_prefix: str, ratios: Tuple[float, float]):
@@ -139,4 +160,4 @@ if __name__ == "__main__":
         "ecgs": record_ecgs,
         "records": record_names,
     }
-    # split_segments_and_save_by_record(total_data, "mimic3_v1", (0.8, 0.2))
+    split_segments_and_save_by_record(total_data, "mimic3_v1_2400", (0.8, 0.2))

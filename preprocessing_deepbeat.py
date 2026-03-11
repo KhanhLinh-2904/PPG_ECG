@@ -21,6 +21,14 @@ def mask_filter(ppg):
 def combine_and_preprocess_datasets():
     all_ppgs = []
     all_labels = []
+    global_stats = {
+        'total_raw': 0,
+        'nan_flat_removed': 0,
+        'nan_flat_af_removed': 0,
+        'quality_removed': 0,
+        'quality_af_removed': 0,
+        'final_count': 0
+    }
     visualized_af = False
     visualized_non_af = False
     for file_name in FILES:
@@ -34,16 +42,25 @@ def combine_and_preprocess_datasets():
         
         x_data = data['x']
         y_data = data['y']
-        print("y_data:", y_data)
-        count_filtered = 0
+        # print("y_data:", y_data)
+        global_stats['total_raw'] += len(x_data)
         for i in range(len(x_data)):
             segment = x_data[i].flatten()
-            
+            label_val = y_data[i]
+            is_af = (label_val == 1)
             try:
+                if any(np.isnan(segment)) or np.std(segment) < 1e-5:
+                    global_stats['nan_flat_removed'] += 1
+                    if is_af: global_stats['nan_flat_af_removed'] += 1
+                    continue
+                    
                 processed_segment = signal_processor.preprocessing_PPG(segment)
                 if mask_filter(processed_segment):
                     # count_filtered += 1
+                    global_stats['quality_removed'] += 1
+                    if is_af: global_stats['quality_af_removed'] += 1
                     continue
+
                 all_ppgs.append(processed_segment)
                 label_val = y_data[i]
                 all_labels.append(label_val)
@@ -76,14 +93,26 @@ def combine_and_preprocess_datasets():
             except Exception as e:
                 print(f" Error processing at index {i} of {file_name}: {e}")
                 continue
-
-        print(f"Complete {file_name}. (Keep: {len(x_data) - count_filtered}, Remove: {count_filtered})")
+        global_stats['final_count'] = len(all_labels)
+      
 
     if all_ppgs:
         final_ppgs = np.array(all_ppgs)
         final_labels = np.array(all_labels)
         
-        np.savez_compressed(SAVE_PATH, ppgs=final_ppgs, labels=final_labels)
+        # np.savez_compressed(SAVE_PATH, ppgs=final_ppgs, labels=final_labels)
+        print("\n" + "="*60)
+        print("BÁO CÁO CHI TIẾT LOẠI BỎ DỮ LIỆU (DETAILED DROPOUT REPORT)")
+        print("="*60)
+        print(f"1. Tổng segment nạp vào:            {global_stats['total_raw']}")
+        
+        print(f"\n2. Lọc lỗi vật lý (NaN/Flat Line):")
+        print(f"   - Tổng số bị loại:               {global_stats['nan_flat_removed']}")
+        print(f"   - Trong đó là nhãn AF:           {global_stats['nan_flat_af_removed']}")
+        
+        print(f"\n3. Lọc chất lượng tín hiệu (SQI < 0.3):")
+        print(f"   - Tổng số bị loại:               {global_stats['quality_removed']}")
+        print(f"   - Trong đó là nhãn AF:           {global_stats['quality_af_removed']}")
 
         print(f"Total samples obtained: {len(final_labels)}")
         print(f"AF rate (1): {np.sum(final_labels == 1) / len(final_labels):.2%}")

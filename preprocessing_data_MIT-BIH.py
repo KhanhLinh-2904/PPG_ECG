@@ -4,8 +4,7 @@ import os
 import matplotlib.pyplot as plt
 from preprocessing import SignalProcessor
 import random
-from utils import calculate_bsqi, calculate_sq_mask
-# --- CÁC HẰNG SỐ ĐƯỢC CẬP NHẬT ---
+from utils import calculate_bsqi
 TARGET_FS = 250
 SLICE_LENGTH = 2400
 signal_preprocess_ecg = SignalProcessor(fs=TARGET_FS)
@@ -15,19 +14,17 @@ def set_seed(seed_value=42):
     random.seed(seed_value)
 
 set_seed(seed)
-def mask_filter(ecg, ppg): 
-    sq_mask_array = calculate_sq_mask(ppg, fs=30)
-    ppg_sqi = np.mean(sq_mask_array)
-    ecg_sqi = calculate_bsqi(ecg, fs=1000)
-    if ppg_sqi < 0.3 or ecg_sqi < 0.3:
+
+def mask_filter(ecg): 
+    ecg_sqi = calculate_bsqi(ecg, fs=250)
+    # print("ECG SQI: ", ecg_sqi)
+    if ecg_sqi < 0.3:
         return True
     return False
 
 def visualize_af_vs_normal_separate(segments, labels, records, fs):
-    
     af_indices = np.where(labels == 1)[0]
     normal_indices = np.where(labels == 0)[0]
-
     if len(af_indices) == 0 or len(normal_indices) == 0:
         print("Warning: Not enough data of both types (AF and Normal) for comparison.")
         return
@@ -76,6 +73,15 @@ def extractData(ecg_signal, ann_atr, fs, record_name, segment_length=2400):
     all_labels = []
     all_record_names = [] 
 
+    stats = {
+        'total_raw': 0,
+        'nan_flat_removed_total': 0,
+        'nan_flat_removed_af': 0,
+        'quality_removed_total': 0,
+        'quality_removed_af': 0,
+        'final_valid': 0
+    }
+
     for i in range(len(ground_truth_samples)):
         start_sample = ground_truth_samples[i]
         end_sample = ground_truth_samples[i+1] if i+1 < len(ground_truth_samples) else n_samples
@@ -90,7 +96,8 @@ def extractData(ecg_signal, ann_atr, fs, record_name, segment_length=2400):
 
         region_signal = ecg_signal[start_sample:end_sample]
         num_segments = len(region_signal) // segment_length
-        
+        stats['total_raw'] += num_segments
+
         if num_segments > 0:
             for j in range(num_segments):
                 start_seg = j * segment_length
@@ -98,16 +105,24 @@ def extractData(ecg_signal, ann_atr, fs, record_name, segment_length=2400):
                 raw_segment = region_signal[start_seg:end_seg]
                 
                 if np.isnan(raw_segment).any() or np.std(raw_segment) < 1e-5:
+                    stats['nan_flat_removed_total'] += 1
+                    if label_value == 1:
+                        stats['nan_flat_removed_af'] += 1
                     continue
-                
                 processed_segment = signal_preprocess_ecg.preprocessing_ECG(raw_segment)
-                
+                if mask_filter(processed_segment):
+                    stats['quality_removed_total'] += 1
+                    if label_value == 1:
+                        stats['quality_removed_af'] += 1
+                    continue
+
+                stats['final_valid'] += 1
                 all_segments.append(processed_segment.reshape(1, -1))
                 all_labels.append(label_value)
                 all_record_names.append(record_name) 
 
     if not all_segments:
-        return None, None, None, True
+        return None, None, None, True, stats
 
     final_segments = np.vstack(all_segments)
     final_labels = np.array(all_labels)
@@ -116,7 +131,7 @@ def extractData(ecg_signal, ann_atr, fs, record_name, segment_length=2400):
     print(f"--- Extraction Complete for {record_name} ---")
     print(f"Total segments: {final_segments.shape[0]}")
     
-    return final_segments, final_labels, final_record_names, False
+    return final_segments, final_labels, final_record_names, False, stats
 
     
 def loadData(data_path="/home/linhhima/Pre_processing_data/Datasets/mit-bih-AF"):
@@ -125,7 +140,12 @@ def loadData(data_path="/home/linhhima/Pre_processing_data/Datasets/mit-bih-AF")
     all_records_list = []
 
     record_files = sorted(list(set([f.split('.')[0] for f in os.listdir(data_path) if f.endswith('.dat')])))
-    
+    g_stats = {
+        'raw': 0, 
+        'nan_rem': 0, 'nan_af_rem': 0, 
+        'sqi_rem': 0, 'sqi_af_rem': 0,
+        'valid': 0
+    }
     total_af_global = 0
     total_non_af_global = 0
     total_records = 0
@@ -147,10 +167,18 @@ def loadData(data_path="/home/linhhima/Pre_processing_data/Datasets/mit-bih-AF")
             Fs = record_data.fs # 250 Hz
             
             ann_atr = wfdb.rdann(os.path.join(data_path, record_name), 'atr')  
-            
-            segments, labels, names, error = extractData(
+
+            segments, labels, names, error, rec_stats = extractData(
                 ecg, ann_atr, Fs, record_name, segment_length=SLICE_LENGTH
             )
+
+            if rec_stats:
+                g_stats['raw'] += rec_stats['total_raw']
+                g_stats['nan_rem'] += rec_stats['nan_flat_removed_total']
+                g_stats['nan_af_rem'] += rec_stats['nan_flat_removed_af']
+                g_stats['sqi_rem'] += rec_stats['quality_removed_total']
+                g_stats['sqi_af_rem'] += rec_stats['quality_removed_af']
+                g_stats['valid'] += rec_stats['final_valid']
 
             if not error and segments is not None:
                 all_segments_list.append(segments)
@@ -164,23 +192,31 @@ def loadData(data_path="/home/linhhima/Pre_processing_data/Datasets/mit-bih-AF")
                 total_non_af_global += num_non_af
                 total_records += 1
 
-            #     print(f"Record {record_name} Statistics:")
-            #     print(f"  - AF segments: {num_af}")
-            #     print(f"  - Non-AF segments: {num_non_af}")
-            # else:
-            #     print(f"Record {record_name}: No valid segments extracted.")
+                print(f"Record {record_name} Statistics:")
+                print(f"  - AF segments: {num_af}")
+                print(f"  - Non-AF segments: {num_non_af}")
+            else:
+                print(f"Record {record_name}: No valid segments extracted.")
 
         except Exception as e:
             print(f"Error processing {record_name}: {e}")
-
+    print("all segments list: ", len(all_segments_list))
     if all_segments_list:
         final_segments = np.vstack(all_segments_list)
         final_labels = np.concatenate(all_labels_list)
         final_names = np.concatenate(all_records_list)
-        print("shape of segments: ", final_segments.shape)
-        print("shape of labels: ", final_labels.shape)
-        print("shape of names: ", final_names.shape)
-        print("\n" + "="*50)
+        print("\n" + "="*65)
+        print("DETAILED PREPROCESSING DROPOUT REPORT")
+        print("="*65)
+        print(f"1. Tổng số segments cắt ra ban đầu:         {g_stats['raw']}")
+        
+        print(f"\n2. Loại bỏ bởi lỗi NaN/Flat Line:")
+        print(f"   - Tổng số bị loại:                       {g_stats['nan_rem']}")
+        print(f"   - Trong đó là nhãn AF:                   {g_stats['nan_af_rem']}")
+        
+        print(f"\n3. Loại bỏ bởi chất lượng SQI < 0.3:")
+        print(f"   - Tổng số bị loại:                       {g_stats['sqi_rem']}")
+        print(f"   - Trong đó là nhãn AF:                   {g_stats['sqi_af_rem']}")
         print("GLOBAL STATISTICS")
         print("="*50)
         print(f"Total Records Processed: {total_records}")
@@ -239,7 +275,7 @@ def save_train_test_split(segments, labels, names, save_path="./processed_data/"
         
 if __name__ == "__main__":
     segments, labels, names = loadData()
-    if segments is not None:
+    # if segments is not None:
         # visualize_af_vs_normal_separate(segments, labels, names, fs=TARGET_FS)
-        save_train_test_split(segments, labels, names, seed=42)
+        # save_train_test_split(segments, labels, names, seed=42)
 

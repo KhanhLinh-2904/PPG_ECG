@@ -260,6 +260,13 @@ def load_and_slice_all_signals(datapath: str, record_list: List[str]):
     record_ppgs = []
     record_ecgs = []
     record_names = []
+
+    stats = {
+        'total_slices': 0,
+        'nan_filtered': 0,
+        'sqi_filtered': 0
+    }
+    
     processor = SignalProcessor(fs=FS)
     visualizer = DataVisualizer(fs=FS, window_seconds=WINDOW_SECONDS, 
                                 pause_time=PAUSE_TIME, step_size=STEP_SIZE)
@@ -296,16 +303,18 @@ def load_and_slice_all_signals(datapath: str, record_list: List[str]):
             continue
         start_idx = 0
         while start_idx + SLICE_LENGTH <= min_len:
-           
+            stats['total_slices'] += 1
             ppg_slice = ppg_preprocessed[start_idx:start_idx + SLICE_LENGTH]
             ecg_slice = ecg_preprocessed[start_idx:start_idx + SLICE_LENGTH]
              
            
             if np.isnan(ppg_slice).any() or np.isnan(ecg_slice).any():
+                stats['nan_filtered'] += 1
                 start_idx += OVERLAP
                 print("Found NaN values, skipping this segment.")
                 continue
             if mask_filter(ecg_slice, ppg_slice):
+                stats['sqi_filtered'] += 1
                 start_idx += OVERLAP
                 print("Segment failed quality check, skipping.")
                 continue
@@ -315,7 +324,7 @@ def load_and_slice_all_signals(datapath: str, record_list: List[str]):
             start_idx += OVERLAP
         print("Number of segments extracted from this record: ", len(record_ppgs))
     print("Total number of PPG segments after slicing: ", len(record_ppgs))
-    return record_ppgs, record_ecgs, record_names
+    return record_ppgs, record_ecgs, record_names, stats
 
 def split_segments_and_save_by_record(total_data: Dict[str, Any], save_prefix: str, ratios: Tuple[float, float], seed: int = 42):
     os.makedirs("datasets", exist_ok=True)
@@ -563,9 +572,22 @@ if __name__ == "__main__":
                      'mimic_perform_af_018',
                     'mimic_perform_af_019'
                     ]
-    non_af_data_ppg, non_af_data_ecg, non_af_records = load_and_slice_all_signals(datapath_non_af, records_sample_non_af)
-    af_data_ppg, af_data_ecg, af_records = load_and_slice_all_signals(datapath_af, records_sample_af)
-
+    non_af_data_ppg, non_af_data_ecg, non_af_records, stats_non_af = load_and_slice_all_signals(datapath_non_af, records_sample_non_af)
+    af_data_ppg, af_data_ecg, af_records, stats_af = load_and_slice_all_signals(datapath_af, records_sample_af)
+    # --- IN BÁO CÁO THỐNG KÊ CHI TIẾT ---
+    print("\n" + "="*50)
+    print(" CHI TIẾT THỐNG KÊ LỌC DỮ LIỆU (DROPOUT REPORT)")
+    print("="*50)
+    
+    print(f"{'Hạng mục':<30} | {'Nhãn AF':<10} | {'Nhãn Non-AF':<10}")
+    print("-" * 55)
+    print(f"{'1. Tổng segment ban đầu':<30} | {stats_af['total_slices']:<10} | {stats_non_af['total_slices']:<10}")
+    
+    print(f"{'2. Bị lọc bởi NaN/Flat':<30} | {stats_af['nan_filtered']:<10} | {stats_non_af['nan_filtered']:<10}")
+    print(f"{'   Tỷ lệ mất mát (%)':<30} | {stats_af['nan_filtered']/max(1,stats_af['total_slices'])*100:>9.2f}% | {stats_non_af['nan_filtered']/max(1,stats_non_af['total_slices'])*100:>9.2f}%")
+    
+    print(f"{'3. Bị lọc bởi SQI (mask)':<30} | {stats_af['sqi_filtered']:<10} | {stats_non_af['sqi_filtered']:<10}")
+    print(f"{'   Tỷ lệ mất mát (%)':<30} | {stats_af['sqi_filtered']/max(1,stats_af['total_slices'])*100:>9.2f}% | {stats_non_af['sqi_filtered']/max(1,stats_non_af['total_slices'])*100:>9.2f}%")
     non_af_labels = [0] * len(non_af_data_ppg)
     af_labels = [1] * len(af_data_ppg)
 
@@ -585,7 +607,7 @@ if __name__ == "__main__":
     print(f"Total number of Non-AF segments: {len(non_af_data_ppg)}")
     print(f"Total number of AF segments: {len(af_data_ppg)}")
     print(f"Total data after merging: {len(total_data['ppgs'])}")
-    save_data(total_data, "total_z")
+    # save_data(total_data, "total_z")
     # split_segments_and_save(total_data, save_prefix="normal_remove24", ratios=(0.8, 0.2))
     # split_segments_and_save_by_record(total_data, save_prefix="record", ratios=(0.8, 0.2))
     # split_segments_and_save(total_data, save_prefix="total_z", ratios=(0.8, 0.2))

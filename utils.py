@@ -18,28 +18,36 @@ def detect_ecg_features(signal, sampling_rate=250):
 
 
 def calculate_bsqi(ecg_signal, fs, tolerance_ms=150):
-    _, info_hamilton = nk.ecg_peaks(ecg_signal, sampling_rate=fs, method="hamilton2002")
-    peaks_hamilton = info_hamilton["ECG_R_Peaks"]
-    _, info_zong = nk.ecg_peaks(ecg_signal, sampling_rate=fs, method="zong2003")
-    peaks_zong = info_zong["ECG_R_Peaks"]
-    peaks_alg1, peaks_alg2 = np.array(peaks_hamilton), np.array(peaks_zong)
-    tolerance_samples = int((tolerance_ms / 1000.0) * fs)
-    agreed_peaks = 0
-    matched_in_alg2 = set()
-    
-    for p1 in peaks_alg1:
-        matches = np.where((peaks_alg2 >= p1 - tolerance_samples) & 
-                           (peaks_alg2 <= p1 + tolerance_samples))[0]
-        for m in matches:
-            if m not in matched_in_alg2:
-                agreed_peaks += 1
-                matched_in_alg2.add(m)
-                break
-                
-    total_unique_peaks = len(peaks_alg1) + len(peaks_alg2) - agreed_peaks
-    if total_unique_peaks == 0: return 0.0
-    return agreed_peaks / total_unique_peaks
-
+    pad_val = 500
+    ecg_signal = np.pad(ecg_signal, (pad_val, pad_val), mode='reflect')
+    try:
+        _, info_hamilton = nk.ecg_peaks(ecg_signal, sampling_rate=fs, method="hamilton2002")
+        peaks_hamilton = info_hamilton["ECG_R_Peaks"]
+        _, info_zong = nk.ecg_peaks(ecg_signal, sampling_rate=fs, method="zong2003")
+        peaks_zong = info_zong["ECG_R_Peaks"]
+        print("Peaks detected by Hamilton: ", len(peaks_hamilton))
+        print("Peaks detected by Zong: ", len(peaks_zong))
+        peaks_alg1, peaks_alg2 = np.array(peaks_hamilton), np.array(peaks_zong)
+        tolerance_samples = int((tolerance_ms / 1000.0) * fs)
+        agreed_peaks = 0
+        matched_in_alg2 = set()
+        
+        for p1 in peaks_alg1:
+            matches = np.where((peaks_alg2 >= p1 - tolerance_samples) & 
+                            (peaks_alg2 <= p1 + tolerance_samples))[0]
+            for m in matches:
+                if m not in matched_in_alg2:
+                    agreed_peaks += 1
+                    matched_in_alg2.add(m)
+                    break
+                    
+        total_unique_peaks = len(peaks_alg1) + len(peaks_alg2) - agreed_peaks
+        if total_unique_peaks == 0:
+            return 0.0
+        return agreed_peaks / total_unique_peaks
+    except Exception as e:
+        print(f"Error in NeuroKit2 peak detection: {e}", flush=True)
+        return 0.0
 
 def visualize_bsqi_steps(ecg_signal, fs, tolerance_ms=150, record_name="ECG Sample"):
     _, info_hamilton = nk.ecg_peaks(ecg_signal, sampling_rate=fs, method="hamilton2002")
