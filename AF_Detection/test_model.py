@@ -9,7 +9,9 @@ from sklearn.metrics import precision_recall_curve, average_precision_score
 
 # ----------- Configuration -----------
 CHECKPOINT_PATH = "AF_Detection/checkpoints/best_model.pth"
+# TEST_DATA_PATH = "AF_Detection/detect_af_deepbeat.npz"
 TEST_DATA_PATH = "AF_Detection/detect_af_MIMIC_AF.npz"
+
 BATCH_SIZE = 32
 
 # ----------- Load Test Data -----------

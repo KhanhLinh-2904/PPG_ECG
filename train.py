@@ -1,8 +1,6 @@
-from CLIP import ECGDecoder_UNet, ECGEssembleCLIP, GradientReversal
-from loss import FastSoftCLIPLoss, PearsonCorrelationLoss
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
-from load_data import LoadData
 from torch.cuda.amp import autocast, GradScaler
 from torch.optim import AdamW
 from tqdm import tqdm
@@ -10,22 +8,21 @@ import time
 import matplotlib.pyplot as plt
 import numpy as np
 import random
-import torch.nn.functional as F
-from utils import detect_ecg_features
+
+from CLIP import ECGEssembleCLIP
+from loss import FastSoftCLIPLoss, PearsonCorrelationLoss, self_clustering_contrastive_loss
+from load_data import LoadData
 
 # --- (CONSTANTS) ---
 SEED = 44
 NUM_EPOCHS = 200
 LEARNING_RATE = 1e-4
 BATCH_SIZE = 64
-WEIGHT_CONTRASTIVE = 1.0 #0.1
+WEIGHT_CONTRASTIVE = 1.0
 WEIGHT_L1 = 1.0      
 WEIGHT_PEARSON = 0.5 
-# WEIGHT_FREQUENCY = 0.01
-# WEIGHT_MASK = 1.0   
 OUTPUT_EMBED_DIM = 128
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-frequency = 125
 
 def set_seed(seed):
     random.seed(seed)
@@ -33,6 +30,19 @@ def set_seed(seed):
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+
+def plot_best_similarity_matrix(embed_ecg, embed_ppg, epoch):
+    raw_sim = (embed_ppg @ embed_ecg.t()).detach().cpu().numpy()
+    
+    plt.figure(figsize=(8, 6))
+    plt.imshow(raw_sim, cmap='viridis', vmin=-1, vmax=1)
+    plt.colorbar(label='Cosine Similarity')
+    plt.title(f"PPG-ECG Similarity Matrix (Best Epoch: {epoch})\n")
+    plt.xlabel("ECG Index (Ground Truth)")
+    plt.ylabel("PPG Index (Predicted)")
+    
+    plt.savefig("best_similarity_matrix.png")
+    plt.close()
 
 def plot_losses_combined(losses_dict, title='Training Losses'):
     epochs = range(1, len(next(iter(losses_dict.values()))) + 1)
@@ -48,52 +58,32 @@ def plot_losses_combined(losses_dict, title='Training Losses'):
     plt.grid(True)
     plt.savefig(f"{title.lower().replace(' ', '_')}.png")
 
-# --- PEARSON CORRELATION LOSS ---
-
-
 def train_epoch_combined(
-    model_clip, model_converter, dataloader, optimizer, 
+    model, dataloader, optimizer, 
     contrast_loss_fn, mse_loss_fn, pearson_loss_fn, 
-    device, scaler,
-    loss_weights
+    device, scaler, loss_weights
 ):
-    model_clip.train()
-    model_converter.train()
-
+    model.train()
     metrics = {k: 0.0 for k in ['total', 'contrast', 'mse', 'pearson']}
 
     progress_bar = tqdm(dataloader, desc="Training (Multi-task)", unit="batch")
     
-    for ecg, ppg, _  in progress_bar:
+    for ecg, ppg, _ in progress_bar:
         ecg_target = ecg.to(device).float().unsqueeze(1)
         ppg_input = ppg.to(device).float().unsqueeze(1)
         
         optimizer.zero_grad()
         
         with autocast():
-            logits_per_ecg, ppg_features, feature_lists_PPG = model_clip(ecg_target, ppg_input)
-            c_loss = contrast_loss_fn(logits_per_ecg, ecg_target)
-
-
-
-            ecg_embedding , _, _ = model_clip.encode_ecg(ecg_target)
-            ppg_embedding, _ , _ = model_clip.encode_ppg(ppg_input)
-            all_embeds = torch.cat([ppg_embedding, ecg_embedding], dim=0)
-            labels_predict = torch.cat([torch.zeros(len(ppg_embedding)), torch.ones(len(ecg_embedding))]).to(device)
-            reversed_embeds = GradientReversal.apply(all_embeds, 1.0)
-            preds = model_clip.modality_classifier(reversed_embeds).squeeze()
-            loss_adv = F.binary_cross_entropy_with_logits(preds, labels_predict)
-
-            predicted_ecg = model_converter(ppg_features, feature_lists_PPG) 
-            m_loss = mse_loss_fn(predicted_ecg, ecg_target) 
-            p_loss = pearson_loss_fn(predicted_ecg, ecg_target)
-           
+            embed_ecg, embed_ppg, ecg_pred = model(ecg_target, ppg_input)
+            
+            c_loss = contrast_loss_fn(embed_ecg, embed_ppg)
+            m_loss = mse_loss_fn(ecg_pred, ecg_target)
+            p_loss = pearson_loss_fn(ecg_pred, ecg_target)
 
             total_loss = (loss_weights['contrast'] * c_loss + 
                           loss_weights['mse'] * m_loss + 
-                          loss_weights['pearson'] * p_loss +
-                          0.1 * loss_adv
-                          )
+                          loss_weights['pearson'] * p_loss)
         
         scaler.scale(total_loss).backward()
         scaler.step(optimizer)
@@ -112,7 +102,7 @@ def train_epoch_combined(
 
     num_batches = len(dataloader)
     avg_losses = {k: v / num_batches for k, v in metrics.items()}
-    return avg_losses
+    return avg_losses, embed_ecg, embed_ppg
 
 if __name__ == "__main__":
     set_seed(SEED)
@@ -120,21 +110,14 @@ if __name__ == "__main__":
 
     train_dataset = LoadData('processed_data/mimic3_v1_2400_train.npz')
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE,
-                               shuffle=True, num_workers=4,
-                                 pin_memory=True)
+                              shuffle=True, num_workers=4, pin_memory=True)
 
+    model = ECGEssembleCLIP(embed_dim=OUTPUT_EMBED_DIM).to(device)
 
-    model_clip = ECGEssembleCLIP(embed_dim=OUTPUT_EMBED_DIM).to(device)
-    model_converter = ECGDecoder_UNet(target_length=2400).to(device)
-
-    contrast_loss = FastSoftCLIPLoss(teacher_temp=0.05, student_temp=0.07).to(device)
     mse_loss = torch.nn.MSELoss().to(device) 
     pearson_loss = PearsonCorrelationLoss().to(device)
-    
-    params_to_optimize = (
-                          list(model_clip.parameters()) + 
-                          list(model_converter.parameters()))
-    optimizer = AdamW(params_to_optimize, lr=LEARNING_RATE, weight_decay=1e-4)
+   
+    optimizer = AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
 
     loss_weights = {
         'contrast': WEIGHT_CONTRASTIVE, 
@@ -153,9 +136,9 @@ if __name__ == "__main__":
     for epoch in range(1, NUM_EPOCHS + 1):
         start = time.time()
 
-        avg_losses = train_epoch_combined(
-            model_clip, model_converter, train_loader, optimizer,
-            contrast_loss, mse_loss, pearson_loss, 
+        avg_losses, last_embed_ecg, last_embed_ppg = train_epoch_combined(
+            model, train_loader, optimizer,
+            self_clustering_contrastive_loss, mse_loss, pearson_loss, 
             device, scaler, loss_weights
         )
         
@@ -168,11 +151,11 @@ if __name__ == "__main__":
 
         if avg_losses['total'] < best_loss:
             best_loss = avg_losses['total']
-            torch.save(model_clip.state_dict(), "multitask_clip_best_model.pth")
-            torch.save(model_converter.state_dict(), "multitask_decoder_best_model.pth")
-            print(f">> Saved best model at epoch {epoch}")
+            torch.save(model.state_dict(), "multitask_best_model.pth")
+            print(f">> Saved best model at epoch {epoch} with Total Loss: {best_loss:.4f}")
+            plot_best_similarity_matrix(last_embed_ecg, last_embed_ppg, epoch)
 
         print(f"Epoch time: {time.time() - start:.1f}s")
         
     print("\nTraining Complete.")
-    plot_losses_combined(history, title="Training Loss Components Over Epochs")
+    plot_losses_combined(history, title="Training Loss Components")

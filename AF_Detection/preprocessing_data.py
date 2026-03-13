@@ -118,12 +118,12 @@ def load_data_and_extract_features(datapath="datasets/total_train.npz", output_n
 
 if __name__ == "__main__":
     set_seed(42)
-    # load_data_and_extract_features(
-    #     datapath="AF_Detection/total_ecg_reconstructions.npz",
-    #     output_name="AF_Detection/detect_af_MIMIC_AF.npz"
-    # )
-    
     load_data_and_extract_features(
-        datapath="AF_Detection/deepbeat_ecg_reconstructions.npz",
-        output_name="AF_Detection/detect_af_deepbeat.npz"
+        datapath="AF_Detection/total_ecg_reconstructions.npz",
+        output_name="AF_Detection/detect_af_MIMIC_AF.npz"
     )
+    
+    # load_data_and_extract_features(
+    #     datapath="AF_Detection/deepbeat_ecg_reconstructions.npz",
+    #     output_name="AF_Detection/detect_af_deepbeat.npz"
+    # )

@@ -138,23 +138,16 @@ class FastSoftCLIPLoss(nn.Module):
     
 
 def self_clustering_contrastive_loss(ecg_norm, ppg_norm, temperature=0.07):
-    """
-    Hàm Standard Contrastive Loss (InfoNCE) giúp xóa bỏ Modality Gap.
-    """
-    # 1. Tính ma trận Logits (Độ tương quan Cosine)
-    # ecg_norm và ppg_norm đã được L2-normalized từ trước
+    
     logits_per_ppg = (ppg_norm @ ecg_norm.t()) / temperature
     logits_per_ecg = (ecg_norm @ ppg_norm.t()) / temperature
     
-    # 2. Tạo nhãn Ground Truth Tuyệt đối (Đường chéo chính)
     batch_size = ecg_norm.shape[0]
-    # Tự động đẩy nhãn lên GPU/CPU khớp với device của input
     labels = torch.arange(batch_size, device=ecg_norm.device)
     
-    # 3. Tính Cross Entropy Loss
     loss_ppg = F.cross_entropy(logits_per_ppg, labels)
     loss_ecg = F.cross_entropy(logits_per_ecg, labels)
     
-    # 4. Trọng số trung bình
     total_loss = (loss_ppg + loss_ecg) / 2
     return total_loss
+

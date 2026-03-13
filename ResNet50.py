@@ -1,7 +1,7 @@
 from torch import nn
 import torch
 import torch.nn.functional as F
-ECG_INPUT_LENGTH = 2400
+ECG_INPUT_LENGTH = 800
 OUTPUT_EMBED_DIM = 128  
 LAYERS = [3, 4, 6, 3] 
 BASE_WIDTH = 64
@@ -24,16 +24,13 @@ class Bottleneck1D(nn.Module):
         self.expansion = EXPANSION
 
         self.conv1 = nn.Conv1d(in_channels, out_channels, kernel_size=1, bias=False)
-        # self.bn1 = nn.BatchNorm1d(out_channels)
         self.bn1 = LayerNorm1d(out_channels)
 
         self.conv2 = nn.Conv1d(out_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False)
-        # self.bn2 = nn.BatchNorm1d(out_channels)
         self.bn2 = LayerNorm1d(out_channels)
 
 
         self.conv3 = nn.Conv1d(out_channels, out_channels * self.expansion, kernel_size=1, bias=False)
-        # self.bn3 = nn.BatchNorm1d(out_channels * self.expansion)
         self.bn3 = LayerNorm1d(out_channels * self.expansion)
 
         self.prelu = nn.PReLU()
@@ -68,7 +65,6 @@ class ResNet50_1D(nn.Module):
         self.in_channels = BASE_WIDTH
 
         self.conv1 = nn.Conv1d(1, BASE_WIDTH, kernel_size=7, stride=2, padding=3, bias=False)
-        # self.bn1 = nn.BatchNorm1d(BASE_WIDTH)
         self.bn1 = LayerNorm1d(BASE_WIDTH)
         self.prelu = nn.PReLU()
         self.maxpool = nn.MaxPool1d(kernel_size=3, stride=2, padding=1)
@@ -79,21 +75,12 @@ class ResNet50_1D(nn.Module):
         self.layer4 = self._make_layer(Bottleneck1D, BASE_WIDTH * 8, layers[3], stride=2)
 
         self.avgpool = nn.AdaptiveAvgPool1d(1)
-        self.fc = nn.Sequential(
-            nn.Linear(2048, 2048),
-            # nn.BatchNorm1d(2048),
-            nn.LayerNorm(2048),
-            nn.PReLU(),
-            nn.Linear(2048, 128)
-        )
-        # self.fc = nn.Linear(BASE_WIDTH * 8 * EXPANSION, num_classes)
     
     def _make_layer(self, block, out_channels, blocks, stride=1):
         downsample = None
         if stride != 1 or self.in_channels != out_channels * EXPANSION:
             downsample = nn.Sequential(
                 nn.Conv1d(self.in_channels, out_channels * EXPANSION, kernel_size=1, stride=stride, bias=False),
-                # nn.BatchNorm1d(out_channels * EXPANSION),
                 LayerNorm1d(out_channels * EXPANSION),
             )
 
@@ -117,30 +104,6 @@ class ResNet50_1D(nn.Module):
         f3 = self.layer3(f2) 
         f4 = self.layer4(f3) 
      
-        feature = f4
-        x = self.avgpool(feature)
-        x = torch.flatten(x, 1)
-        x = self.fc(x)
-        return x, f4, [f1, f2, f3]
+        return f4, [f1, f2, f3]
     
 
-if __name__ == '__main__':
-    
-    model = ResNet50_1D(
-        layers=LAYERS,
-        num_classes=OUTPUT_EMBED_DIM
-    )
-    
-    dummy_ecg = torch.randn(4, 1, ECG_INPUT_LENGTH)
-    
-    print(f"Shape of dummy ECG input: {dummy_ecg.shape}")
-    
-    output_ecg_embedding,f4, [f1, f2, f3] = model(dummy_ecg)
-    
-    print(f"Shape of predicted PPG features output: {output_ecg_embedding.shape}")
-    print(f"f4: {f4.shape}")
-    print(f"f1: {f1.shape}")
-    print(f"f2: {f2.shape}")
-    print(f"f3: {f3.shape}")
-
-    # print(f"Expected shape: [4, 128] (Batch size, ECG Embedding Dimension)")
