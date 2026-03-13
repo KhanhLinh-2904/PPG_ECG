@@ -3,11 +3,10 @@ import numpy as np
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
 from load_data import LoadData
-from CLIP import ECGDecoder_UNet, ECGEssembleCLIP
+from CLIP_2 import ECGEssembleCLIP  
 import random
 import os
 from metric import calculate_cosine_similarity, calculate_dtw_distance, calculate_metrics
-
 
 # --- CONFIGURATION ---
 SEED = 40
@@ -16,10 +15,11 @@ BATCH_SIZE = 64
 INPUT_LENGTH = 2400
 OUTPUT_EMBED_DIM = 128
 TEST_DATA_PATH = 'processed_data/mimic3_v1_2400_test.npz'
-CLIP_MODEL_PATH = "multitask_clip_best_model.pth"
-DECODER_MODEL_PATH = "multitask_decoder_best_model.pth"
-ppg_sqi_thresh = 0.3
-ecg_sqi_thresh = 0.3
+
+# Chỉ cần 1 đường dẫn weight duy nhất từ quá trình train mới
+CLIP_MODEL_PATH = "multitask_best_model.pth" 
+
+
 def set_seed(seed):
     random.seed(seed)
     np.random.seed(seed)
@@ -27,30 +27,27 @@ def set_seed(seed):
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
-def load_models():
-    print(f"Loading models on {DEVICE}...")
+def load_model():
+    print(f"Loading model on {DEVICE}...")
     
-    model_clip = ECGEssembleCLIP(embed_dim=OUTPUT_EMBED_DIM).to(DEVICE)
-    model_converter = ECGDecoder_UNet(bottleneck_channels=2048, target_length=2400).to(DEVICE)
+    # Khởi tạo mô hình duy nhất
+    model = ECGEssembleCLIP(embed_dim=OUTPUT_EMBED_DIM).to(DEVICE)
 
+    # Load weights
     if torch.cuda.is_available():
-        clip_weights = torch.load(CLIP_MODEL_PATH)
-        decoder_weights = torch.load(DECODER_MODEL_PATH)
+        weights = torch.load(CLIP_MODEL_PATH)
     else:
-        clip_weights = torch.load(CLIP_MODEL_PATH, map_location='cpu')
-        decoder_weights = torch.load(DECODER_MODEL_PATH, map_location='cpu')
+        weights = torch.load(CLIP_MODEL_PATH, map_location='cpu')
 
-    model_clip.load_state_dict(clip_weights)
-    model_converter.load_state_dict(decoder_weights)
+    model.load_state_dict(weights)
+    model.eval()
     
-    model_clip.eval()
-    model_converter.eval()
-    
-    return  model_clip, model_converter
+    return model
 
-def save_ecg_reconstruction(output_path = "AF_Detection/ecg_reconstructions.npz"):
+def save_ecg_reconstruction(output_path="AF_Detection/ecg_reconstructions.npz"):
     set_seed(SEED)
-    model_clip, model_converter = load_models()
+    model = load_model()
+    
     all_predicted_ecgs = []
     all_original_ppgs = []
     all_labels = []
@@ -63,26 +60,29 @@ def save_ecg_reconstruction(output_path = "AF_Detection/ecg_reconstructions.npz"
         print(f"Error: {e}")
         return
    
-    print("Running inference for visualization...")
+    print("Running inference and saving reconstructions...")
     with torch.no_grad():
         for i, (ecg, ppg, record_names, label) in enumerate(test_loader):
             ppg_input = ppg.to(DEVICE).float().unsqueeze(1)
-            print("record name: ", record_names)
-            ppg_embedding, feature_lists_PPG = model_clip(None, ppg_input)
-            predicted_ecg = model_converter(ppg_embedding, feature_lists_PPG)
+            # print("record name: ", record_names)
+            
+            predicted_ecg = model(None, ppg_input)
+            
             all_predicted_ecgs.append(predicted_ecg.squeeze(1).cpu().numpy())
             all_original_ppgs.append(ppg.cpu().numpy())
             all_labels.append(label.cpu().numpy())
             all_record_names.append(record_names)
+            
     save_dict = {
         "ecgs": np.concatenate(all_predicted_ecgs, axis=0),
         "ppgs": np.concatenate(all_original_ppgs, axis=0),
         "labels": np.concatenate(all_labels, axis=0),
         "records": np.array(all_record_names, dtype=object) 
     }
+    
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     np.savez_compressed(output_path, **save_dict)
-
+    print(f"Saved reconstructions to {output_path}")
 
 def visualize_results(ppg, ecg_true, ecg_pred, sample_idx, record_name):
     print(f"Visualizing Record: {record_name}")
@@ -90,7 +90,6 @@ def visualize_results(ppg, ecg_true, ecg_pred, sample_idx, record_name):
     t_ecg = np.arange(len(ecg_true))
 
     plt.figure(figsize=(12, 10))
-    
     plt.suptitle(f"Record: {record_name} - Sample ID: {sample_idx}", fontsize=14, fontweight='bold')
 
     plt.subplot(4, 1, 1)
@@ -124,7 +123,7 @@ def visualize_results(ppg, ecg_true, ecg_pred, sample_idx, record_name):
 
 def run_visualization():
     set_seed(SEED)
-    model_clip, model_converter = load_models()
+    model = load_model()
     seen_records = set()
 
     try:
@@ -139,10 +138,9 @@ def run_visualization():
         for i, (ecg, ppg, record_names) in enumerate(test_loader):
             ppg_input = ppg.to(DEVICE).float().unsqueeze(1)
             
-            ppg_embedding, feature_lists_PPG = model_clip(None, ppg_input)
-            predicted_ecg = model_converter(ppg_embedding, feature_lists_PPG)
+            # Forward pass duy nhất
+            predicted_ecg = model(None, ppg_input)
 
-            # np.atleast_2d vẫn được giữ lại để đảm bảo không lỗi khi batch size = 1
             ppg_np = np.atleast_2d(ppg_input.cpu().squeeze().numpy())
             ecg_true_np = np.atleast_2d(ecg.cpu().squeeze().numpy())
             ecg_pred_np = np.atleast_2d(predicted_ecg.cpu().squeeze().numpy())
@@ -161,9 +159,14 @@ def run_visualization():
                     seen_records.add(current_rec_name)
 
 def run_loss():
-    model_clip, model_converter = load_models()
-    test_dataset = LoadData(TEST_DATA_PATH)
-    test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
+    model = load_model()
+    
+    try:
+        test_dataset = LoadData(TEST_DATA_PATH)
+        test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
+    except Exception as e:
+        print(f"Error: {e}")
+        return
 
     total_rmse, total_pearson, total_dtw, total_cosine, total_samples = 0, 0, 0, 0, 0
 
@@ -172,8 +175,8 @@ def run_loss():
         for i, (ecg, ppg, record_names) in enumerate(test_loader):
             ppg_input = ppg.to(DEVICE).float().unsqueeze(1)
             
-            ppg_embedding, feature_lists_PPG = model_clip(None, ppg_input)
-            predicted_ecg = model_converter(ppg_embedding, feature_lists_PPG)
+            # Forward pass duy nhất
+            predicted_ecg = model(None, ppg_input)
 
             ecg_true_np = np.atleast_2d(ecg.cpu().squeeze().numpy())
             ecg_pred_np = np.atleast_2d(predicted_ecg.cpu().squeeze().numpy())
@@ -185,8 +188,7 @@ def run_loss():
                 rmse, pearson = calculate_metrics(true_s, pred_s)
                 dtw = calculate_dtw_distance(true_s, pred_s)
                 cosine = calculate_cosine_similarity(true_s, pred_s)
-                # print("Record:", record_names[b])
-                # print(f"  rRMSE: {rmse:.4f}, Pearson: {pearson:.4f}, DTW: {dtw:.4f}, Cosine: {cosine:.4f}")
+                
                 total_rmse += rmse
                 total_pearson += pearson
                 total_dtw += dtw
@@ -199,10 +201,10 @@ def run_loss():
     print(f"DTW: {total_dtw/total_samples:.4f}")
     print(f"Cosine: {total_cosine/total_samples:.4f}")
 
-
-def save_ecg_reconstruction_deepbeat(output_path = "AF_Detection/ecg_deepbeat_reconstructions.npz"):
+def save_ecg_reconstruction_deepbeat(output_path="AF_Detection/ecg_deepbeat_reconstructions.npz"):
     set_seed(SEED)
-    model_clip, model_converter = load_models()
+    model = load_model()
+    
     all_predicted_ecgs = []
     all_original_ppgs = []
     all_labels = []
@@ -214,24 +216,30 @@ def save_ecg_reconstruction_deepbeat(output_path = "AF_Detection/ecg_deepbeat_re
         print(f"Error: {e}")
         return
    
-    print("Running inference for visualization...")
+    print("Running inference and saving DeepBeat reconstructions...")
     with torch.no_grad():
-        for i, ( ppg, label) in enumerate(test_loader):
+        for i, (ppg, label) in enumerate(test_loader):
             ppg_input = ppg.to(DEVICE).float().unsqueeze(1)
-            ppg_embedding, feature_lists_PPG = model_clip(None, ppg_input)
-            predicted_ecg = model_converter(ppg_embedding, feature_lists_PPG)
+            
+            # Forward pass duy nhất
+            predicted_ecg = model(None, ppg_input)
+            
             all_predicted_ecgs.append(predicted_ecg.squeeze(1).cpu().numpy())
             all_original_ppgs.append(ppg.cpu().numpy())
             all_labels.append(label.cpu().numpy())
+            
     save_dict = {
         "ecgs": np.concatenate(all_predicted_ecgs, axis=0),
         "ppgs": np.concatenate(all_original_ppgs, axis=0),
         "labels": np.concatenate(all_labels, axis=0),
     }
+    
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     np.savez_compressed(output_path, **save_dict)
+    print(f"Saved DeepBeat reconstructions to {output_path}")
+
 if __name__ == "__main__":
-    # run_visualization()
-    run_loss()
+    run_visualization()
+    # run_loss()
     # save_ecg_reconstruction("AF_Detection/total_ecg_reconstructions.npz")
     # save_ecg_reconstruction_deepbeat("AF_Detection/deepbeat_ecg_reconstructions.npz")

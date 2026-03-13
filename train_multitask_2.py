@@ -1,8 +1,6 @@
-from CLIP import ECGDecoder_UNet, ECGEssembleCLIP, GradientReversal
-from loss import FastSoftCLIPLoss, PearsonCorrelationLoss
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
-from load_data import LoadData
 from torch.cuda.amp import autocast, GradScaler
 from torch.optim import AdamW
 from tqdm import tqdm
@@ -10,22 +8,21 @@ import time
 import matplotlib.pyplot as plt
 import numpy as np
 import random
-import torch.nn.functional as F
-from utils import detect_ecg_features
+
+from CLIP_2 import ECGEssembleCLIP
+from loss import FastSoftCLIPLoss, PearsonCorrelationLoss, self_clustering_contrastive_loss
+from load_data import LoadData
 
 # --- (CONSTANTS) ---
 SEED = 44
 NUM_EPOCHS = 200
 LEARNING_RATE = 1e-4
 BATCH_SIZE = 64
-WEIGHT_CONTRASTIVE = 1.0 #0.1
+WEIGHT_CONTRASTIVE = 1.0
 WEIGHT_L1 = 1.0      
 WEIGHT_PEARSON = 0.5 
-# WEIGHT_FREQUENCY = 0.01
-# WEIGHT_MASK = 1.0   
 OUTPUT_EMBED_DIM = 128
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-frequency = 125
 
 def set_seed(seed):
     random.seed(seed)
@@ -48,57 +45,42 @@ def plot_losses_combined(losses_dict, title='Training Losses'):
     plt.grid(True)
     plt.savefig(f"{title.lower().replace(' ', '_')}.png")
 
-# --- PEARSON CORRELATION LOSS ---
-
-
 def train_epoch_combined(
-    model_clip, model_converter, dataloader, optimizer, 
+    model, dataloader, optimizer, 
     contrast_loss_fn, mse_loss_fn, pearson_loss_fn, 
-    device, scaler,
-    loss_weights
+    device, scaler, loss_weights
 ):
-    model_clip.train()
-    model_converter.train()
-
+    model.train()
     metrics = {k: 0.0 for k in ['total', 'contrast', 'mse', 'pearson']}
 
     progress_bar = tqdm(dataloader, desc="Training (Multi-task)", unit="batch")
     
-    for ecg, ppg, _  in progress_bar:
+    for ecg, ppg, _ in progress_bar:
         ecg_target = ecg.to(device).float().unsqueeze(1)
         ppg_input = ppg.to(device).float().unsqueeze(1)
         
         optimizer.zero_grad()
         
         with autocast():
-            logits_per_ecg, ppg_features, feature_lists_PPG = model_clip(ecg_target, ppg_input)
-            c_loss = contrast_loss_fn(logits_per_ecg, ecg_target)
+            # Bước Forward duy nhất: Mô hình trả về (ecg_embedding, ppg_embedding, ecg_reconstructed)
+            embed_ecg, embed_ppg, ecg_pred = model(ecg_target, ppg_input)
+            
+            # Tính toán các thành phần Loss
+            c_loss = contrast_loss_fn(embed_ecg, embed_ppg)
+            m_loss = mse_loss_fn(ecg_pred, ecg_target)
+            p_loss = pearson_loss_fn(ecg_pred, ecg_target)
 
-
-
-            ecg_embedding , _, _ = model_clip.encode_ecg(ecg_target)
-            ppg_embedding, _ , _ = model_clip.encode_ppg(ppg_input)
-            all_embeds = torch.cat([ppg_embedding, ecg_embedding], dim=0)
-            labels_predict = torch.cat([torch.zeros(len(ppg_embedding)), torch.ones(len(ecg_embedding))]).to(device)
-            reversed_embeds = GradientReversal.apply(all_embeds, 1.0)
-            preds = model_clip.modality_classifier(reversed_embeds).squeeze()
-            loss_adv = F.binary_cross_entropy_with_logits(preds, labels_predict)
-
-            predicted_ecg = model_converter(ppg_features, feature_lists_PPG) 
-            m_loss = mse_loss_fn(predicted_ecg, ecg_target) 
-            p_loss = pearson_loss_fn(predicted_ecg, ecg_target)
-           
-
+            # Tổng hợp Loss
             total_loss = (loss_weights['contrast'] * c_loss + 
                           loss_weights['mse'] * m_loss + 
-                          loss_weights['pearson'] * p_loss +
-                          0.1 * loss_adv
-                          )
+                          loss_weights['pearson'] * p_loss)
         
+        # Cập nhật trọng số với Mixed Precision
         scaler.scale(total_loss).backward()
         scaler.step(optimizer)
         scaler.update()
 
+        # Lưu trữ metrics
         metrics['total'] += total_loss.item()
         metrics['contrast'] += c_loss.item() * loss_weights['contrast']
         metrics['mse'] += m_loss.item() * loss_weights['mse']
@@ -118,23 +100,20 @@ if __name__ == "__main__":
     set_seed(SEED)
     print(f"Using device: {device}")
 
+    # Load Data
     train_dataset = LoadData('processed_data/mimic3_v1_2400_train.npz')
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE,
-                               shuffle=True, num_workers=4,
-                                 pin_memory=True)
+                              shuffle=True, num_workers=4, pin_memory=True)
 
+    # Khởi tạo MỘT mô hình duy nhất bao gồm cả Encoder và Decoder
+    model = ECGEssembleCLIP(embed_dim=OUTPUT_EMBED_DIM).to(device)
 
-    model_clip = ECGEssembleCLIP(embed_dim=OUTPUT_EMBED_DIM).to(device)
-    model_converter = ECGDecoder_UNet(target_length=2400).to(device)
-
-    contrast_loss = FastSoftCLIPLoss(teacher_temp=0.05, student_temp=0.07).to(device)
+    # Khởi tạo loss functions
     mse_loss = torch.nn.MSELoss().to(device) 
     pearson_loss = PearsonCorrelationLoss().to(device)
-    
-    params_to_optimize = (
-                          list(model_clip.parameters()) + 
-                          list(model_converter.parameters()))
-    optimizer = AdamW(params_to_optimize, lr=LEARNING_RATE, weight_decay=1e-4)
+   
+    # Tối ưu hóa toàn bộ tham số trong ECGEssembleCLIP
+    optimizer = AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
 
     loss_weights = {
         'contrast': WEIGHT_CONTRASTIVE, 
@@ -154,8 +133,8 @@ if __name__ == "__main__":
         start = time.time()
 
         avg_losses = train_epoch_combined(
-            model_clip, model_converter, train_loader, optimizer,
-            contrast_loss, mse_loss, pearson_loss, 
+            model, train_loader, optimizer,
+            self_clustering_contrastive_loss, mse_loss, pearson_loss, 
             device, scaler, loss_weights
         )
         
@@ -166,13 +145,14 @@ if __name__ == "__main__":
         
         print(f"\nEpoch {epoch}/{NUM_EPOCHS}")
 
+        # Lưu model dựa trên Total Loss
         if avg_losses['total'] < best_loss:
             best_loss = avg_losses['total']
-            torch.save(model_clip.state_dict(), "multitask_clip_best_model.pth")
-            torch.save(model_converter.state_dict(), "multitask_decoder_best_model.pth")
-            print(f">> Saved best model at epoch {epoch}")
+            # Giờ chỉ cần lưu state_dict của model duy nhất
+            torch.save(model.state_dict(), "multitask_best_model.pth")
+            print(f">> Saved best model at epoch {epoch} with Total Loss: {best_loss:.4f}")
 
         print(f"Epoch time: {time.time() - start:.1f}s")
         
     print("\nTraining Complete.")
-    plot_losses_combined(history, title="Training Loss Components Over Epochs")
+    plot_losses_combined(history, title="Training Loss Components")

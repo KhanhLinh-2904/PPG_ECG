@@ -5,6 +5,27 @@ from scipy.signal import correlate
 import numpy as np
 import random
 import matplotlib.pyplot as plt
+import math
+class PearsonCorrelationLoss(torch.nn.Module):
+    def __init__(self):
+        super(PearsonCorrelationLoss, self).__init__()
+
+    def forward(self, x, y):
+      
+        x_flat = x.view(x.shape[0], -1)
+        y_flat = y.view(y.shape[0], -1)
+        
+        mean_x = torch.mean(x_flat, dim=1, keepdim=True)
+        mean_y = torch.mean(y_flat, dim=1, keepdim=True)
+        
+        xm = x_flat - mean_x
+        ym = y_flat - mean_y
+        
+        r_num = torch.sum(xm * ym, dim=1)
+        r_den = torch.sqrt(torch.sum(xm ** 2, dim=1) * torch.sum(ym ** 2, dim=1) + 1e-8)
+        
+        r = r_num / r_den
+        return 1 - torch.mean(r)
 class SoftCLIPLoss(nn.Module):
     def __init__(self, teacher_temp=0.05, student_temp=0.07):
         super().__init__()
@@ -98,11 +119,11 @@ class FastSoftCLIPLoss(nn.Module):
         # 2. Teacher Probabilities 
         with torch.no_grad(): 
             target_sim_matrix = self.compute_target_similarity_gpu(ecg_original)
-            if random.random() < 0.01: # Thỉnh thoảng in ra 1 lần
-                plt.imshow(target_sim_matrix.cpu().numpy(), cmap='viridis')
-                plt.colorbar()
-                plt.title("Teacher ECG Similarity Matrix (Raw Signal)")
-                plt.show()
+            # if random.random() < 0.01: # Thỉnh thoảng in ra 1 lần
+            #     plt.imshow(target_sim_matrix.cpu().numpy(), cmap='viridis')
+            #     plt.colorbar()
+            #     plt.title("Teacher ECG Similarity Matrix (Raw Signal)")
+            #     plt.show()
             
             logits_teacher = target_sim_matrix / self.teacher_temp
             target_prob_row = F.softmax(logits_teacher, dim=1)
@@ -114,3 +135,26 @@ class FastSoftCLIPLoss(nn.Module):
 
         total_loss = (loss_row + loss_col) / 2
         return total_loss
+    
+
+def self_clustering_contrastive_loss(ecg_norm, ppg_norm, temperature=0.07):
+    """
+    Hàm Standard Contrastive Loss (InfoNCE) giúp xóa bỏ Modality Gap.
+    """
+    # 1. Tính ma trận Logits (Độ tương quan Cosine)
+    # ecg_norm và ppg_norm đã được L2-normalized từ trước
+    logits_per_ppg = (ppg_norm @ ecg_norm.t()) / temperature
+    logits_per_ecg = (ecg_norm @ ppg_norm.t()) / temperature
+    
+    # 2. Tạo nhãn Ground Truth Tuyệt đối (Đường chéo chính)
+    batch_size = ecg_norm.shape[0]
+    # Tự động đẩy nhãn lên GPU/CPU khớp với device của input
+    labels = torch.arange(batch_size, device=ecg_norm.device)
+    
+    # 3. Tính Cross Entropy Loss
+    loss_ppg = F.cross_entropy(logits_per_ppg, labels)
+    loss_ecg = F.cross_entropy(logits_per_ecg, labels)
+    
+    # 4. Trọng số trung bình
+    total_loss = (loss_ppg + loss_ecg) / 2
+    return total_loss

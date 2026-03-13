@@ -1,7 +1,8 @@
 import torch
 from torch import nn
 import math
-from ResNet50 import ResNet50_1D
+from ResNet50 import ResNet50_1D, LayerNorm1d
+from torch.autograd import Function
 
 OUTPUT_EMBED_DIM = 128 
 INPUT_LENGTH = 2400
@@ -20,22 +21,28 @@ class ECGEssembleCLIP(nn.Module):
         self.encode_ppg = ResNet50_1D(
         layers=[3, 4, 6, 3] ,
         num_classes=OUTPUT_EMBED_DIM)
-        self.encode_ecg.fc = self.encode_ppg.fc
+
         self.logit_scale = nn.Parameter(torch.ones([]) * math.log(1 / 0.07))
+
+        self.modality_classifier = nn.Sequential(
+            nn.Linear(128, 64),
+            nn.PReLU(),
+            nn.Linear(64, 1)
+        )
 
     def forward(self, ecg_original, ppg_original):
         if ecg_original is None:
-            ecg_predicted_features, featured_PPG, feature_lists_PPG = self.encode_ppg(ppg_original)
+            PPG_embedding, featured_PPG, feature_lists_PPG = self.encode_ppg(ppg_original)
             return  featured_PPG, feature_lists_PPG
         else:
-            ecg_original_features, featured_ECG, feature_lists_ECG = self.encode_ecg(ecg_original)
-            ecg_predicted_features, featured_PPG, feature_lists_PPG = self.encode_ppg(ppg_original)
-            ecg_original_features = ecg_original_features / ecg_original_features.norm(dim=1, keepdim=True)
-            ecg_predicted_features = ecg_predicted_features / ecg_predicted_features.norm(dim=1, keepdim=True)
+            ECG_embedding, featured_ECG, feature_lists_ECG = self.encode_ecg(ecg_original)
+            PPG_embedding, featured_PPG, feature_lists_PPG = self.encode_ppg(ppg_original)
+            ecg_embedding = ECG_embedding / ECG_embedding.norm(dim=1, keepdim=True)
+            ppg_embedding = PPG_embedding / PPG_embedding.norm(dim=1, keepdim=True)
 
             logit_scale = self.logit_scale.exp()
         
-            logits_per_original = logit_scale * ecg_original_features @ ecg_predicted_features.t()
+            logits_per_original = logit_scale * ecg_embedding @ ppg_embedding.t()
             
             return logits_per_original, featured_PPG, feature_lists_PPG
 
@@ -49,10 +56,12 @@ class DecoderBlock_UNet(nn.Module):
         
         self.conv = nn.Sequential(
             nn.Conv1d(total_in_channels, out_channels, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm1d(out_channels),
+            # nn.BatchNorm1d(out_channels),
+            LayerNorm1d(out_channels),
             nn.PReLU(),
             nn.Conv1d(out_channels, out_channels, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm1d(out_channels),
+            # nn.BatchNorm1d(out_channels),
+            LayerNorm1d(out_channels),
             nn.PReLU()
         )
 
@@ -75,7 +84,8 @@ class ECGDecoder_UNet(nn.Module):
         # Adapter: Bottleneck 
         self.adapter = nn.Sequential(
             nn.Conv1d(bottleneck_channels, 512, kernel_size=1),
-            nn.BatchNorm1d(512),
+            # nn.BatchNorm1d(512),
+            LayerNorm1d(512),
             nn.PReLU()
         ) 
 
@@ -97,7 +107,8 @@ class ECGDecoder_UNet(nn.Module):
         self.final_conv = nn.Conv1d(16, 1, kernel_size=1)
         self.refine_conv = nn.Sequential(
             nn.Conv1d(1, 16, kernel_size=15, padding=7), # Kernel lớn để bao quát ngữ cảnh
-            nn.BatchNorm1d(16),
+            # nn.BatchNorm1d(16),
+            LayerNorm1d(16),
             nn.PReLU(),
             nn.Conv1d(16, 1, kernel_size=1) # Trả về 1 kênh duy nhất
         )
@@ -125,3 +136,16 @@ class ECGDecoder_UNet(nn.Module):
             )
             x = self.refine_conv(x)
         return x
+
+
+
+class GradientReversal(Function):
+    @staticmethod
+    def forward(ctx, x, alpha):
+        ctx.alpha = alpha
+        return x.view_as(x)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        output = grad_output.neg() * ctx.alpha # Nhân -1 ở đây!
+        return output, None
