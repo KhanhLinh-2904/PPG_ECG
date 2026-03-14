@@ -14,7 +14,7 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 BATCH_SIZE = 64
 INPUT_LENGTH = 2400
 OUTPUT_EMBED_DIM = 128
-TEST_DATA_PATH = 'datasets/total_z.npz'
+TEST_DATA_PATH = 'processed_data_single/record_30_test.npz'
 CLIP_MODEL_PATH = "multitask_best_model.pth" 
 
 
@@ -233,6 +233,6 @@ def save_ecg_reconstruction_deepbeat(output_path="AF_Detection/ecg_deepbeat_reco
 
 if __name__ == "__main__":
     # run_visualization()
-    # run_loss()
-    save_ecg_reconstruction("AF_Detection/total_ecg_reconstructions.npz")
+    run_loss()
+    # save_ecg_reconstruction("AF_Detection/total_ecg_reconstructions.npz")
     # save_ecg_reconstruction_deepbeat("AF_Detection/deepbeat_ecg_reconstructions.npz")

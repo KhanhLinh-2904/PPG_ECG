@@ -5,6 +5,8 @@ from torch.cuda.amp import autocast, GradScaler
 from torch.optim import AdamW
 from tqdm import tqdm
 import time
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 import random
@@ -15,7 +17,7 @@ from load_data import LoadData
 
 # --- (CONSTANTS) ---
 SEED = 44
-NUM_EPOCHS = 200
+NUM_EPOCHS = 250
 LEARNING_RATE = 1e-4
 BATCH_SIZE = 64
 WEIGHT_CONTRASTIVE = 1.0
@@ -108,7 +110,7 @@ if __name__ == "__main__":
     set_seed(SEED)
     print(f"Using device: {device}")
 
-    train_dataset = LoadData('processed_data/mimic3_v1_2400_train.npz')
+    train_dataset = LoadData('processed_data_single/record_30_train.npz')
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE,
                               shuffle=True, num_workers=4, pin_memory=True)
 
