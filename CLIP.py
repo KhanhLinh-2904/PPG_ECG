@@ -78,7 +78,7 @@ class ECGEssembleCLIP(nn.Module):
             d_model=256, 
             nhead=8, 
             num_layers=4, 
-            target_length=625
+            target_length=2400
         )
 
     def forward(self, ecg_original, ppg_original):
