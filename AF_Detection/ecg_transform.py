@@ -97,27 +97,23 @@ class GumbelVectorQuantizer(nn.Module):
     def forward(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
         if not self.time_first: x = x.transpose(1, 2)
         bsz, tsz, fsz = x.shape
-
         x = self.weight_proj(x).view(bsz * tsz * self.groups, -1)
-
-        
+        zero_x = x.new_zeros(*x.shape)
         _, k = x.max(-1)
         hard_x = x.new_zeros(*x.shape).scatter_(-1, k.view(-1, 1), 1.0).view(bsz * tsz, self.groups, -1)
-
         hard_probs = torch.mean(hard_x.float(), dim=0)
-        code_perplexity = torch.exp(-torch.sum(hard_probs * torch.log(hard_probs + 1e-7), dim=-1)).sum()
 
+        code_perplexity = torch.exp(-torch.sum(hard_probs * torch.log(hard_probs + 1e-7), dim=-1)).sum()
         if self.training:
             x_idx = F.gumbel_softmax(x.float(), tau=self.curr_temp, hard=True).type_as(x)
         else:
             x_idx = hard_x.view(bsz * tsz * self.groups, -1)
-
+      
         x_idx = x_idx.view(bsz * tsz, -1).unsqueeze(-1)
+     
         q_vec = (x_idx * self.vars).view(bsz * tsz, self.groups, self.num_vars, -1).sum(-2)
         q_vec = q_vec.view(bsz, tsz, -1)
-        
         targets = x.view(bsz * tsz * self.groups, -1).argmax(dim=-1).view(bsz, tsz, self.groups).detach()
-
         if not self.time_first: q_vec = q_vec.transpose(1, 2)
         return {"q": q_vec, "targets": targets, "perplexity": code_perplexity}
 
@@ -134,6 +130,7 @@ class FeatureMasking(nn.Module):
             return x, torch.zeros(x.shape[:2], dtype=torch.bool, device=x.device)
 
         bsz, seq_len, _ = x.shape
+        print("mask_prob, seq_len, mask_length: ", self.mask_prob, seq_len, self.mask_length)
         num_mask_spans = int(self.mask_prob * seq_len / self.mask_length)
         num_mask_spans = max(1, num_mask_spans) if self.mask_prob > 0.0 else 0
         # print("num mask span: ", num_mask_spans)
@@ -225,14 +222,23 @@ class ECGAFClassifier(nn.Module):
                 param.requires_grad = False
 
         self.classifier = nn.Sequential(
-            nn.Dropout(dropout_prob),
             nn.Linear(embed_dim, hidden_dim),
-            nn.GELU(),
+            nn.BatchNorm1d(hidden_dim),
+            nn.ReLU(),
             nn.Dropout(dropout_prob),
+
             nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.GELU(),
+            nn.BatchNorm1d(hidden_dim // 2),
+            nn.ReLU(),
             nn.Dropout(dropout_prob),
-            nn.Linear(hidden_dim // 2, num_classes)
+
+            nn.Linear(hidden_dim // 2, hidden_dim // 4),
+            nn.BatchNorm1d(hidden_dim // 4),
+            nn.ReLU(),
+            nn.Dropout(dropout_prob),
+
+            nn.Linear(hidden_dim // 4, num_classes)
+
         )
 
     def forward(self, source: torch.Tensor, padding_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
@@ -282,3 +288,13 @@ class InfoNCEContrastiveLoss(nn.Module):
         total_loss = local_loss  + (self.diversity_weight * diversity_penalty)
         
         return total_loss, local_loss
+    
+
+if __name__ == "__main__":
+    batch = 1
+    channel = 1
+    length = 2400
+    ecg_dum = torch.randn(batch, channel, length)
+    model = ECGTransformerModel()
+    result = model(ecg_dum)
+    print("ecg dummy: ", ecg_dum)

@@ -39,10 +39,10 @@ def load_and_slice_all_signals():
                                 pause_time=PAUSE_TIME, step_size=STEP_SIZE)
     processor = SignalProcessor(fs=FS)
     stats = {
-        'total_raw': 0,           # Tổng số segment cắt ra ban đầu
-        'nan_flat_removed': 0,    # Số bị loại do NaN hoặc tín hiệu phẳng
-        'sqi_removed': 0,         # Số bị loại do chất lượng kém (SQI)
-        'final_valid': 0          # Số segment hợp lệ cuối cùng
+    'total_raw': 0,           # Total initial segments extracted
+    'nan_flat_removed': 0,    # Removed due to NaN or flatline signals
+    'sqi_removed': 0,         # Removed due to poor signal quality (SQI)
+    'final_valid': 0          # Final count of valid segments
     }
     for index in range(records.size):
         ecg = records[index, 0]['ecg_II'][:, 0]
@@ -89,19 +89,19 @@ def load_and_slice_all_signals():
             stats['final_valid'] += 1
             start_idx += OVERLAP
 
-    # # --- IN BÁO CÁO TỔNG KẾT ---
-    # print("\n" + "="*50)
-    # print("BÁO CÁO THỐNG KÊ TIỀN XỬ LÝ (PROCESSING SUMMARY)")
-    # print("="*50)
-    # print(f"1. Tổng segment ban đầu:            {stats['total_raw']}")
-    # print(f"2. Bị loại bởi NaN/Flat Line:       {stats['nan_flat_removed']}")
-    # print(f"3. Bị loại bởi chất lượng SQI:      {stats['sqi_removed']}")
-    # print("-" * 50)
-    # print(f"KẾT QUẢ CUỐI CÙNG:")
-    # print(f"   - Tổng mẫu hợp lệ:               {stats['final_valid']}")
-    # print(f"   - Tỷ lệ giữ lại:                 {stats['final_valid']/max(1,stats['total_raw']):.2%}")
-    # print("="*50)
-    # print("Tổng số segments PPG sau khi cắt: ", len(record_ppgs))
+    # # --- PRINT PROCESSING SUMMARY ---
+    # print("\n" + "="*60)
+    # print(" PREPROCESSING SUMMARY REPORT ")
+    # print("="*60)
+    # print(f"1. Total initial segments:           {stats['total_raw']}")
+    # print(f"2. Removed due to NaN/Flat Line:     {stats['nan_flat_removed']}")
+    # print(f"3. Removed due to poor SQI quality:  {stats['sqi_removed']}")
+    # print("-" * 60)
+    # print(f"FINAL RESULTS:")
+    # print(f"   - Total valid samples:            {stats['final_valid']}")
+    # print(f"   - Retention Rate:                 {stats['final_valid']/max(1,stats['total_raw']):.2%}")
+    # print("="*60)
+    # print("Total PPG segments after slicing: ", len(record_ppgs))
     return record_ppgs, record_ecgs, record_names
 
 def split_segments_and_save_by_record(total_data: Dict[str, Any], save_prefix: str, ratios: Tuple[float, float]):

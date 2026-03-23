@@ -15,7 +15,7 @@ BATCH_SIZE = 64
 INPUT_LENGTH = 2400
 OUTPUT_EMBED_DIM = 128
 TEST_DATA_PATH = 'processed_data/mimic3_v1_2400_test.npz'
-CLIP_MODEL_PATH = "multitask_best_model.pth" 
+CLIP_MODEL_PATH = "multitask_best_model_good.pth" 
 SAMPLING_RATE = 125
 NUM_SAMPLES_TO_VISUALIZE = 2000 
 LAYERS_TO_VISUALIZE = ['layer1', 'layer2', 'layer3', 'layer4']
@@ -109,14 +109,14 @@ def visualize_feature_space():
                 sum_ecg_fft += batch_ecg_fft
                 sum_ppg_fft += batch_ppg_fft
 
-            # Trích xuất fused_3d
+            # Extracting fused_3d
             ecg_fused_1d, ecg_fused_3d, ecg_features_list = model.encode_ecg(ecg_input)
             ppg_fused_1d, ppg_fused_3d, ppg_features_list = model.encode_ppg(ppg_input)
 
             ecg_fre_feat = model.encode_ecg.freq_branch(ecg_input)
             ppg_fre_feat = model.encode_ppg.freq_branch(ppg_input)
 
-            # Lấy trung bình theo chiều dài (Global Average Pooling) để đưa về 2D cho t-SNE
+            #  (Global Average Pooling) to get 2D for t-SNE
             ecg_f3d_pooled = ecg_fused_3d.mean(dim=2).cpu().numpy()
             ppg_f3d_pooled = ppg_fused_3d.mean(dim=2).cpu().numpy()
             
@@ -126,7 +126,7 @@ def visualize_feature_space():
             freq_ecg_list.append(ecg_fre_feat.cpu().numpy())
             freq_ppg_list.append(ppg_fre_feat.cpu().numpy())
 
-            # Trích xuất final embedding
+            # Extracting final embedding
             ecg_embed, ppg_embed, _ = model(ecg_input, ppg_input)
             
             ecg_embed = F.normalize(ecg_embed, p=2, dim=-1)
@@ -197,7 +197,7 @@ def visualize_feature_space():
         plt.plot([ppg_freq_2d[i, 0], ecg_freq_2d[i, 0]], [ppg_freq_2d[i, 1], ecg_freq_2d[i, 1]], 
                  color='gray', alpha=0.2, linewidth=1, zorder=0)
 
-    plt.title(f"Frequency Features Alignment (N={actual_samples})\n(Expected: Separation due to mechanical vs electrical nature)", 
+    plt.title(f"Frequency Features Alignment (N={actual_samples})", 
               fontsize=14, fontweight='bold', color='purple', pad=15)
     plt.xlabel('t-SNE Dimension 1')
     plt.ylabel('t-SNE Dimension 2')
@@ -207,7 +207,7 @@ def visualize_feature_space():
     # ---------------------------------------------------------
     # 3.  FUSED 3D (AFTER CROSS-ATTENTION)
     # ---------------------------------------------------------
-    print(f"\n [3/5] Running t-SNE for Fused 3D Features (N={actual_samples})...")
+    print(f"\n [3/5] Running t-SNE after CrossAttentionFusion (N={actual_samples})...")
     ppg_fused_all = np.concatenate(fused_3d_ppg_list, axis=0)[:actual_samples]
     ecg_fused_all = np.concatenate(fused_3d_ecg_list, axis=0)[:actual_samples]
     
@@ -258,7 +258,7 @@ def visualize_feature_space():
         plt.plot([ppg_2d_final[i, 0], ecg_2d_final[i, 0]], [ppg_2d_final[i, 1], ecg_2d_final[i, 1]], 
                  color='gray', alpha=0.2, linewidth=1, zorder=0)
 
-    plt.title(f"Final 128D Space Alignment (N={actual_samples})\n(Ideal: mixed dots, short lines)", 
+    plt.title(f"Final 128D Space Alignment (N={actual_samples})", 
               fontsize=14, fontweight='bold', color='darkgreen', pad=15)
     plt.xlabel('t-SNE Dimension 1')
     plt.ylabel('t-SNE Dimension 2')
@@ -272,17 +272,17 @@ def visualize_feature_space():
 
     print(f"\n [6/6] Running t-SNE for Raw FFT Features (N={actual_samples})...")
     
-    # Gộp list thành mảng numpy lớn
+    # Combine list into large numpy array
     ppg_raw_fft_all = np.concatenate(raw_fft_ppg_list, axis=0)[:actual_samples]
     ecg_raw_fft_all = np.concatenate(raw_fft_ecg_list, axis=0)[:actual_samples]
     
-    # Loại bỏ thành phần DC (cột 0) để không làm nhiễu t-SNE
+    # Remove DC component (column 0) so that it can not noise t-SNE
     ppg_raw_fft_all = ppg_raw_fft_all[:, 1:]
     ecg_raw_fft_all = ecg_raw_fft_all[:, 1:]
     
     all_raw_fft = np.vstack((ppg_raw_fft_all, ecg_raw_fft_all))
     
-    # Chạy t-SNE
+    # t-SNE
     tsne_raw_fft = TSNE(n_components=2, perplexity=30, max_iter=1000, random_state=SEED)
     all_raw_fft_2d = tsne_raw_fft.fit_transform(all_raw_fft)
     
@@ -297,7 +297,7 @@ def visualize_feature_space():
         plt.plot([ppg_raw_fft_2d[i, 0], ecg_raw_fft_2d[i, 0]], [ppg_raw_fft_2d[i, 1], ecg_raw_fft_2d[i, 1]], 
                  color='gray', alpha=0.2, linewidth=1, zorder=0)
 
-    plt.title(f"Raw FFT Space Alignment (N={actual_samples})\n(Expected: Complete Separation)", 
+    plt.title(f"Raw FFT Space Alignment (N={actual_samples})", 
               fontsize=14, fontweight='bold', color='maroon', pad=15)
     plt.xlabel('t-SNE Dimension 1')
     plt.ylabel('t-SNE Dimension 2')

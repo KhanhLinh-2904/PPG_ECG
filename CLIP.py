@@ -56,8 +56,9 @@ class DualDomainEncoder(nn.Module):
         
         # Cross-Attention 
         fused_3d = self.fusion_module(f4, freq_feat) 
-        
+        print("shape of fused_3d: ", fused_3d.shape)
         fused_1d = self.avgpool(fused_3d).squeeze(-1) 
+        print("shape of fused_1d: ", fused_1d.shape)
         return fused_1d, fused_3d, features_list
     
 
@@ -217,8 +218,18 @@ class FFT_MLP(nn.Module):
         current_len = mag_x.shape[-1]
         if current_len < self.fft_len:
             pad_size = self.fft_len - current_len
-            # F.pad format: (pad_left, pad_right). Ta chỉ thêm vào đuôi (cao tần)
             mag_x = F.pad(mag_x, (0, pad_size), mode='constant', value=0.0)
 
         freq_feat = self.mlp(mag_x) 
         return freq_feat
+    
+
+if __name__ == "__main__":
+    BATCH_SIZE = 32
+    CHANNELS = 1
+    SEQ_LENGTH = 2400
+    EMBED_DIM = 256
+
+    dummy_ecg = torch.randn(BATCH_SIZE, CHANNELS, SEQ_LENGTH)
+    model = DualDomainEncoder()
+    output_features = model(dummy_ecg)

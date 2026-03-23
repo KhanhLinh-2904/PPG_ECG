@@ -64,7 +64,7 @@ if __name__ == "__main__":
     DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     try:
-        test_data = np.load('processed_data/MIT_BIH_test_data.npz')
+        test_data = np.load('AF_Detection/deepbeat_ecg_reconstructions.npz')
         X_test = torch.tensor(test_data["ecgs"], dtype=torch.float32)
         y_test = torch.tensor(test_data["labels"], dtype=torch.long)
     except FileNotFoundError:

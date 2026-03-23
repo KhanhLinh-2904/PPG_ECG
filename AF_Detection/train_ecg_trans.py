@@ -18,8 +18,8 @@ if __name__ == "__main__":
     # ==========================================
     # ⚙️ CẤU HÌNH CHẠY (BẬT/TẮT CÁC GIAI ĐOẠN)
     # ==========================================
-    DO_PRETRAIN = False  # Đổi thành True nếu bạn muốn train lại backbone từ đầu
-    DO_FINETUNE = True   # Bật/tắt Giai đoạn 2
+    DO_PRETRAIN = False  
+    DO_FINETUNE = True   
     # ==========================================
 
     set_seed(42)
@@ -32,36 +32,54 @@ if __name__ == "__main__":
     pretrained_path = os.path.join(CHECKPOINT_DIR, "pretrained_backbone.pth")
     print(f"📁 Thư mục lưu trọng số: {CHECKPOINT_DIR}")
 
-    # --- CHUẨN BỊ DỮ LIỆU ---
-    print("⏳ Đang tải dữ liệu...")
+    # --- CHUẨN BỊ DỮ LIỆU TRAIN ---
+    print("⏳ Đang tải dữ liệu Train...")
     try:
         train_data = np.load('processed_data/MIT_BIH_train_data.npz')
         X_train = torch.tensor(train_data["ecgs"], dtype=torch.float32)
         y_train = torch.tensor(train_data["labels"], dtype=torch.long)
     except FileNotFoundError:
-        print("⚠️ Không tìm thấy file dữ liệu, sử dụng dữ liệu giả lập (Dummy Data).")
+        print("⚠️ Không tìm thấy file dữ liệu Train, sử dụng dữ liệu giả lập (Dummy Data).")
         X_train = torch.randn(100, 1, 2400)
         y_train = torch.randint(0, 2, (100,))
-
-    print("⏳ Đang tải dữ liệu Test...")
-    try:
-        test_data = np.load('processed_data/MIT_BIH_test_data.npz')
-        X_test = torch.tensor(test_data["ecgs"], dtype=torch.float32)
-        y_test = torch.tensor(test_data["labels"], dtype=torch.long)
-        if X_test.dim() == 2:
-            X_test = X_test.unsqueeze(1)
-        test_dataset = TensorDataset(X_test, y_test)
-        # Lưu ý: shuffle=False cho tập Test
-        test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False) 
-    except FileNotFoundError:
-        print("⚠️ Lỗi: Không tìm thấy file Test.")
-        test_loader = None
 
     if X_train.dim() == 2:
         X_train = X_train.unsqueeze(1)
 
     train_dataset = TensorDataset(X_train, y_train)
     train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+
+    # --- CHUẨN BỊ 3 TẬP DỮ LIỆU TEST ---
+    print("⏳ Đang tải các tập dữ liệu Test...")
+    test_loaders = {} # Dùng dictionary để lưu tên dataset và loader tương ứng
+    
+    test_files = {
+        "MIT-BIH": 'processed_data/MIT_BIH_test_data.npz',
+        "Total-Recon": 'AF_Detection/total_ecg_reconstructions.npz',
+        "DeepBeat-Recon": 'AF_Detection/deepbeat_ecg_reconstructions.npz'
+    }
+
+    for name, path in test_files.items():
+        try:
+            t_data = np.load(path)
+            # Lưu ý: Cần kiểm tra tên khóa (key) trong các file .npz mới có giống với MIT-BIH không.
+            # Giả định chúng đều dùng khóa 'ecgs' và 'labels'.
+            X_t = torch.tensor(t_data["ecgs"], dtype=torch.float32)
+            y_t = torch.tensor(t_data["labels"], dtype=torch.long)
+            
+            if X_t.dim() == 2:
+                X_t = X_t.unsqueeze(1)
+                
+            t_dataset = TensorDataset(X_t, y_t)
+            test_loaders[name] = DataLoader(t_dataset, batch_size=32, shuffle=False)
+            print(f"  ✅ Đã tải thành công tập Test: {name} (Kích thước: {X_t.shape[0]} mẫu)")
+        except FileNotFoundError:
+            print(f"  ⚠️ Lỗi: Không tìm thấy file Test '{path}'. Bỏ qua tập này.")
+        except KeyError as e:
+            print(f"  ⚠️ Lỗi: Không tìm thấy khóa {e} trong file '{path}'. Vui lòng kiểm tra lại cấu trúc file .npz.")
+
+    if not test_loaders:
+        print("⚠️ Không tải được tập Test nào!")
 
     # --- KHỞI TẠO XƯƠNG SỐNG (BACKBONE) ---
     print("🧠 Khởi tạo mô hình Backbone...")
@@ -143,20 +161,20 @@ if __name__ == "__main__":
         model = ECGAFClassifier(
             backbone=backbone,
             embed_dim=EMBED_DIM,
+            hidden_dim=int(EMBED_DIM/2),
             num_classes=2,
-            dropout_prob=0.1,
-            freeze_backbone=True
+            dropout_prob=0.3,
+            freeze_backbone=False
         ).to(device)
 
         trainable_params = filter(lambda p: p.requires_grad, model.parameters())
         
-        finetune_epochs = 50
+        finetune_epochs = 20
         finetune_criterion = nn.CrossEntropyLoss()
-        finetune_optimizer = torch.optim.AdamW(trainable_params, lr=1e-3)
-
+        finetune_optimizer = torch.optim.AdamW(trainable_params, lr=1e-4)
         for epoch in range(finetune_epochs):
             model.train()
-            model.backbone.eval() 
+            # model.backbone.eval() # BỎ DÒNG NÀY VÌ ĐÃ UNFREEZE BACKBONE
             
             running_loss = 0.0
             correct_preds = 0
@@ -180,36 +198,33 @@ if __name__ == "__main__":
             epoch_loss = running_loss / total_samples
             epoch_acc = (correct_preds / total_samples) * 100.0
 
-            if test_loader is not None:
-                model.eval() # Chuyển mô hình sang chế độ test (tắt Dropout)
-                test_loss = 0.0
-                test_correct = 0
-                test_total = 0
-                
-                with torch.no_grad(): # Tắt tính toán gradient để tăng tốc và tiết kiệm RAM
-                    for test_inputs, test_labels in test_loader:
-                        test_inputs, test_labels = test_inputs.to(device), test_labels.to(device)
-                        
-                        test_logits = model(test_inputs)
-                        t_loss = finetune_criterion(test_logits, test_labels)
-                        
-                        test_loss += t_loss.item() * test_inputs.size(0)
-                        _, test_preds = torch.max(test_logits, dim=1)
-                        test_correct += torch.sum(test_preds == test_labels).item()
-                        test_total += test_labels.size(0)
-                        
-                epoch_test_loss = test_loss / test_total
-                epoch_test_acc = (test_correct / test_total) * 100.0
-                
-                # In ra màn hình cả Train và Test để dễ dàng so sánh
-                print(f"Epoch [{epoch+1}/{finetune_epochs}] "
-                      f"| Train Loss: {epoch_loss:.4f} - Train Acc: {epoch_acc:.2f}% "
-                      f"| Test Loss: {epoch_test_loss:.4f} - Test Acc: {epoch_test_acc:.2f}%")
-            else:
-                print(f"Epoch [{epoch+1}/{finetune_epochs}] | Train Loss: {epoch_loss:.4f} | Train Acc: {epoch_acc:.2f}%")
-            
-            # print(f"Fine-tune Epoch [{epoch+1}/{finetune_epochs}] | Loss: {epoch_loss:.4f} | Accuracy: {epoch_acc:.2f}%")
+            print(f"\nEpoch [{epoch+1}/{finetune_epochs}] | Train Loss: {epoch_loss:.4f} - Train Acc: {epoch_acc:.2f}%")
 
-        final_path = os.path.join(CHECKPOINT_DIR, "final_af_classifier.pth")
+            # --- ĐÁNH GIÁ TRÊN 3 TẬP TEST ---
+            if test_loaders:
+                model.eval() 
+                with torch.no_grad():
+                    for test_name, loader in test_loaders.items():
+                        test_loss = 0.0
+                        test_correct = 0
+                        test_total = 0
+                        
+                        for test_inputs, test_labels in loader:
+                            test_inputs, test_labels = test_inputs.to(device), test_labels.to(device)
+                            
+                            test_logits = model(test_inputs)
+                            t_loss = finetune_criterion(test_logits, test_labels)
+                            
+                            test_loss += t_loss.item() * test_inputs.size(0)
+                            _, test_preds = torch.max(test_logits, dim=1)
+                            test_correct += torch.sum(test_preds == test_labels).item()
+                            test_total += test_labels.size(0)
+                            
+                        epoch_test_loss = test_loss / test_total
+                        epoch_test_acc = (test_correct / test_total) * 100.0
+                        
+                        print(f"  👉 Test [{test_name}]: Loss = {epoch_test_loss:.4f} | Acc = {epoch_test_acc:.2f}%")
+
+        final_path = os.path.join(CHECKPOINT_DIR, "final_af_classifier_unfreezed.pth")
         torch.save(model.state_dict(), final_path)
-        print(f"🎉 KẾT THÚC CHU TRÌNH! Lưu mô hình tại: {final_path}")
+        print(f"\n🎉 KẾT THÚC CHU TRÌNH! Lưu mô hình tại: {final_path}")

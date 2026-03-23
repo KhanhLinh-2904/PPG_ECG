@@ -37,7 +37,6 @@ def mask_filter(ecg, ppg):
         return True
     return False
 class SignalProcessor:
-    """Chứa các hàm lọc, chuẩn hóa và tiền xử lý tín hiệu."""
     def __init__(self, fs: float):
         self.fs = fs
 
@@ -574,20 +573,20 @@ if __name__ == "__main__":
                     ]
     non_af_data_ppg, non_af_data_ecg, non_af_records, stats_non_af = load_and_slice_all_signals(datapath_non_af, records_sample_non_af)
     af_data_ppg, af_data_ecg, af_records, stats_af = load_and_slice_all_signals(datapath_af, records_sample_af)
-    # --- IN BÁO CÁO THỐNG KÊ CHI TIẾT ---
-    print("\n" + "="*50)
-    print(" CHI TIẾT THỐNG KÊ LỌC DỮ LIỆU (DROPOUT REPORT)")
-    print("="*50)
+    # --- PRINT DETAILED STATISTICAL REPORT ---
+    print("\n" + "="*60)
+    print(" DATA FILTERING STATISTICS (DROPOUT REPORT)")
+    print("="*60)
     
-    print(f"{'Hạng mục':<30} | {'Nhãn AF':<10} | {'Nhãn Non-AF':<10}")
-    print("-" * 55)
-    print(f"{'1. Tổng segment ban đầu':<30} | {stats_af['total_slices']:<10} | {stats_non_af['total_slices']:<10}")
+    print(f"{'Category':<35} | {'AF Label':<10} | {'Non-AF Label':<12}")
+    print("-" * 65)
+    print(f"{'1. Total Initial Segments':<35} | {stats_af['total_slices']:<10} | {stats_non_af['total_slices']:<12}")
     
-    print(f"{'2. Bị lọc bởi NaN/Flat':<30} | {stats_af['nan_filtered']:<10} | {stats_non_af['nan_filtered']:<10}")
-    print(f"{'   Tỷ lệ mất mát (%)':<30} | {stats_af['nan_filtered']/max(1,stats_af['total_slices'])*100:>9.2f}% | {stats_non_af['nan_filtered']/max(1,stats_non_af['total_slices'])*100:>9.2f}%")
+    print(f"{'2. Filtered by NaN/Flat signal':<35} | {stats_af['nan_filtered']:<10} | {stats_non_af['nan_filtered']:<12}")
+    print(f"{'   Dropout Rate (%)':<35} | {stats_af['nan_filtered']/max(1,stats_af['total_slices'])*100:>9.2f}% | {stats_non_af['nan_filtered']/max(1,stats_non_af['total_slices'])*100:>11.2f}%")
     
-    print(f"{'3. Bị lọc bởi SQI (mask)':<30} | {stats_af['sqi_filtered']:<10} | {stats_non_af['sqi_filtered']:<10}")
-    print(f"{'   Tỷ lệ mất mát (%)':<30} | {stats_af['sqi_filtered']/max(1,stats_af['total_slices'])*100:>9.2f}% | {stats_non_af['sqi_filtered']/max(1,stats_non_af['total_slices'])*100:>9.2f}%")
+    print(f"{'3. Filtered by SQI (masking)':<35} | {stats_af['sqi_filtered']:<10} | {stats_non_af['sqi_filtered']:<12}")
+    print(f"{'   Dropout Rate (%)':<35} | {stats_af['sqi_filtered']/max(1,stats_af['total_slices'])*100:>9.2f}% | {stats_non_af['sqi_filtered']/max(1,stats_non_af['total_slices'])*100:>11.2f}%")
     non_af_labels = [0] * len(non_af_data_ppg)
     af_labels = [1] * len(af_data_ppg)
 

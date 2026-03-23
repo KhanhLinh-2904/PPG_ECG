@@ -4,13 +4,12 @@ import os
 from preprocessing import SignalProcessor
 from utils import calculate_sq_mask
 import matplotlib.pyplot as plt
-# --- CẤU HÌNH ---
+# --- Configuration ---
 PATH = "/home/linhhima/Pre_processing_data/Datasets/deepbeat_data_extract/"
 FILES = ["train_cleaned_signals.npz", "val_cleaned_signals.npz", "test_cleaned_signals.npz"]
 SAVE_PATH = os.path.join("processed_data", "deepbeat_combined.npz")
 FS = 32
 
-# Khởi tạo bộ tiền xử lý
 signal_processor = SignalProcessor(fs=FS)
 
 def mask_filter(ppg): 
@@ -65,13 +64,13 @@ def combine_and_preprocess_datasets():
                 label_val = y_data[i]
                 all_labels.append(label_val)
 
-                # # 3. Logic hiển thị mẫu đại diện (Chỉ chạy 1 lần cho mỗi loại nhãn)
+                # # 3. Representative Sample Display Logic (Runs only once per label type)
                 # is_af = (label_val == 1)
                 
                 # if (is_af and not visualized_af):
                 #     plt.figure(figsize=(12, 4))
                     
-                #     # Thiết lập màu sắc và tiêu đề theo nhãn
+                #     # Set colors and titles based on class labels
                 #     color = '#e74c3c' if is_af else '#27ae60'
                 #     title = "REPRESENTATIVE: AFIB (Label 1)" if is_af else "REPRESENTATIVE: Non-AF/Normal (Label 0)"
                     
@@ -85,7 +84,7 @@ def combine_and_preprocess_datasets():
                 #     plt.tight_layout()
                 #     plt.show()
 
-                #     # # Đánh dấu đã hiển thị xong để không lặp lại ở các segment sau
+                #     # Mark as displayed to prevent repetition in subsequent segments
                 #     # if is_af: visualized_af = True
                 #     # else: visualized_non_af = True
               
@@ -102,17 +101,17 @@ def combine_and_preprocess_datasets():
         
         # np.savez_compressed(SAVE_PATH, ppgs=final_ppgs, labels=final_labels)
         print("\n" + "="*60)
-        print("BÁO CÁO CHI TIẾT LOẠI BỎ DỮ LIỆU (DETAILED DROPOUT REPORT)")
+        print(" DETAILED DATA EXCLUSION REPORT (DROPOUT ANALYSIS) ")
         print("="*60)
-        print(f"1. Tổng segment nạp vào:            {global_stats['total_raw']}")
+        print(f"1. Total initial segments loaded:    {global_stats['total_raw']}")
         
-        print(f"\n2. Lọc lỗi vật lý (NaN/Flat Line):")
-        print(f"   - Tổng số bị loại:               {global_stats['nan_flat_removed']}")
-        print(f"   - Trong đó là nhãn AF:           {global_stats['nan_flat_af_removed']}")
+        print(f"\n2. Physical Artifact Filtering (NaN/Flat Line):")
+        print(f"   - Total segments excluded:         {global_stats['nan_flat_removed']}")
+        print(f"   - Of which were AF-labeled:       {global_stats['nan_flat_af_removed']}")
         
-        print(f"\n3. Lọc chất lượng tín hiệu (SQI < 0.3):")
-        print(f"   - Tổng số bị loại:               {global_stats['quality_removed']}")
-        print(f"   - Trong đó là nhãn AF:           {global_stats['quality_af_removed']}")
+        print(f"\n3. Signal Quality Filtering (SQI < 0.3):")
+        print(f"   - Total segments excluded:         {global_stats['quality_removed']}")
+        print(f"   - Of which were AF-labeled:       {global_stats['quality_af_removed']}")
 
         print(f"Total samples obtained: {len(final_labels)}")
         print(f"AF rate (1): {np.sum(final_labels == 1) / len(final_labels):.2%}")
