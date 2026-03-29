@@ -6,7 +6,7 @@ import numpy as np
 
 # Libraries for calculating advanced evaluation metrics
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
-from ecg_transform import ECGTransformerModel, ECGAFClassifier
+from ecg_transform_copy import ECGTransformerModel, ECGAFClassifier
 
 if __name__ == "__main__":
     # 1. Device configuration
@@ -19,7 +19,7 @@ if __name__ == "__main__":
     print("⏳ Loading Test Data...")
     try:
         # Replace with your actual test data file
-        test_data = np.load('AF_Detection/deepbeat_ecg_reconstructions.npz')
+        test_data = np.load('ơ')
         X_test = torch.tensor(test_data["ecgs"], dtype=torch.float32)
         y_test = torch.tensor(test_data["labels"], dtype=torch.long)
     except FileNotFoundError:
@@ -67,7 +67,7 @@ if __name__ == "__main__":
     # ==============================================================================
     # 4. LOAD TRAINED WEIGHTS (CHECKPOINT)
     # ==============================================================================
-    MODEL_PATH = "AF_Detection/checkpoints/final_af_classifier_unfreezed.pth" # Updated to load the best model
+    MODEL_PATH = "AF_Detection/checkpoints/final_af_classifier.pth" # Updated to load the best model
     
     if os.path.exists(MODEL_PATH):
         model.load_state_dict(torch.load(MODEL_PATH, map_location=device))

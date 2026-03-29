@@ -17,7 +17,7 @@ from load_data import LoadData
 
 # --- (CONSTANTS) ---
 SEED = 44
-NUM_EPOCHS = 250
+NUM_EPOCHS = 200
 LEARNING_RATE = 1e-4
 BATCH_SIZE = 64
 WEIGHT_CONTRASTIVE = 1.0
@@ -25,7 +25,7 @@ WEIGHT_L1 = 1.0
 WEIGHT_PEARSON = 0.5 
 OUTPUT_EMBED_DIM = 128
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
+# freeze_encoder_ecg = "multitask_best_model_ecg.pth"
 def set_seed(seed):
     random.seed(seed)
     np.random.seed(seed)
@@ -79,6 +79,8 @@ def train_epoch_combined(
         with autocast():
             embed_ecg, embed_ppg, ecg_pred = model(ecg_target, ppg_input)
             
+            # ecg_pred = model(None, ppg_input)
+
             c_loss = contrast_loss_fn(embed_ecg, embed_ppg)
             m_loss = mse_loss_fn(ecg_pred, ecg_target)
             p_loss = pearson_loss_fn(ecg_pred, ecg_target)
@@ -86,6 +88,10 @@ def train_epoch_combined(
             total_loss = (loss_weights['contrast'] * c_loss + 
                           loss_weights['mse'] * m_loss + 
                           loss_weights['pearson'] * p_loss)
+            
+            # total_loss = (
+            #               loss_weights['mse'] * m_loss + 
+            #               loss_weights['pearson'] * p_loss)
         
         scaler.scale(total_loss).backward()
         scaler.step(optimizer)
@@ -105,16 +111,28 @@ def train_epoch_combined(
     num_batches = len(dataloader)
     avg_losses = {k: v / num_batches for k, v in metrics.items()}
     return avg_losses, embed_ecg, embed_ppg
+    # return avg_losses
+
 
 if __name__ == "__main__":
     set_seed(SEED)
     print(f"Using device: {device}")
 
-    train_dataset = LoadData('processed_data_single/record_30_train.npz')
+    train_dataset = LoadData('processed_data/mimic3_v1_2400_train.npz')
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE,
                               shuffle=True, num_workers=4, pin_memory=True)
 
     model = ECGEssembleCLIP(embed_dim=OUTPUT_EMBED_DIM).to(device)
+
+    # checkpoint = torch.load(freeze_encoder_ecg, map_location=device)
+    # saved_state_dict = checkpoint.get('model_state_dict', checkpoint)
+    
+
+    # ecg_encoder_weights = {k.replace('encode_ecg.', ''): v for k, v in saved_state_dict.items() if k.startswith('encode_ecg.')}
+    # if ecg_encoder_weights:
+    #     model.encode_ecg.load_state_dict(ecg_encoder_weights, strict=True)  
+    # for param in model.encode_ecg.parameters():
+    #     param.requires_grad = False
 
     mse_loss = torch.nn.MSELoss().to(device) 
     pearson_loss = PearsonCorrelationLoss().to(device)

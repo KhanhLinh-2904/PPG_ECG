@@ -25,8 +25,8 @@ def calculate_bsqi(ecg_signal, fs, tolerance_ms=150):
         peaks_hamilton = info_hamilton["ECG_R_Peaks"]
         _, info_zong = nk.ecg_peaks(ecg_signal, sampling_rate=fs, method="zong2003")
         peaks_zong = info_zong["ECG_R_Peaks"]
-        print("Peaks detected by Hamilton: ", len(peaks_hamilton))
-        print("Peaks detected by Zong: ", len(peaks_zong))
+        # print("Peaks detected by Hamilton: ", len(peaks_hamilton))
+        # print("Peaks detected by Zong: ", len(peaks_zong))
         peaks_alg1, peaks_alg2 = np.array(peaks_hamilton), np.array(peaks_zong)
         tolerance_samples = int((tolerance_ms / 1000.0) * fs)
         agreed_peaks = 0

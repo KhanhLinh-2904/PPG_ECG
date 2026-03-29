@@ -234,8 +234,8 @@ def loadData(data_path="/home/linhhima/Pre_processing_data/Datasets/mit-bih-AF")
         return None, None, None
 
         
-def save_train_test_split(segments, labels, names, save_path="./processed_data/", seed=42):
-   
+def save_train_test_split_record(segments, labels, names, save_path="./processed_data/", seed=42):
+    ratio = 0.8
     if not os.path.exists(save_path):
         os.makedirs(save_path)
 
@@ -243,7 +243,7 @@ def save_train_test_split(segments, labels, names, save_path="./processed_data/"
     np.random.seed(seed)
     np.random.shuffle(unique_records)
 
-    split_idx = int(len(unique_records) * 0.8)
+    split_idx = int(len(unique_records) * ratio)
     train_records = unique_records[:split_idx]
     test_records = unique_records[split_idx:]
 
@@ -262,10 +262,10 @@ def save_train_test_split(segments, labels, names, save_path="./processed_data/"
     test_labels = labels[test_mask]
     test_names = names[test_mask]
 
-    np.savez_compressed(os.path.join(save_path, "MIT_BIH_train_data.npz"), 
+    np.savez_compressed(os.path.join(save_path, "MIT_BIH_train_record.npz"), 
                         ecgs=train_ecgs, labels=train_labels, records=train_names)
 
-    np.savez_compressed(os.path.join(save_path, "MIT_BIH_test_data.npz"), 
+    np.savez_compressed(os.path.join(save_path, "MIT_BIH_test_record.npz"), 
                         ecgs=test_ecgs, labels=test_labels, records=test_names)
 
     print("\n--- Save Completed ---")
@@ -273,11 +273,51 @@ def save_train_test_split(segments, labels, names, save_path="./processed_data/"
     print(f"Test:  {test_ecgs.shape[0]} segments | AF: {np.sum(test_labels==1)}")
     print(f"Files saved at: {save_path}")
 
- 
+def split_train_test_per_record(segments, labels, names, seed=42):
+    save_path = "processed_data/"
+    ratio = 0.8
+    np.random.seed(seed)
+    unique_records = np.unique(names)
+    
+    train_indices = []
+    test_indices = []
+
+    for record in unique_records:
+        idx = np.where(names == record)[0]
+        split_point = int(len(idx) * ratio)
+        train_indices.extend(idx[:split_point])
+        test_indices.extend(idx[split_point:])
+        
+    train_indices = np.array(train_indices)
+    test_indices = np.array(test_indices)
+
+    train_ecgs = segments[train_indices]
+    train_labels = labels[train_indices]
+    train_names = names[train_indices]
+
+    test_ecgs = segments[test_indices]
+    test_labels = labels[test_indices]
+    test_names = names[test_indices]
+
+    # --- PRINT STATISTICAL REPORT ---
+    print("\n" + "="*55)
+    print(" DATA SPLIT DETAILS (80/20 PER RECORD)")
+    print("="*55)
+    print(f"Total unique patients (records) : {len(unique_records)}")
+    print(f"Total initial segments          : {len(segments)}")
+    print(f"Train set                       : {len(train_ecgs)} segments ({len(train_ecgs)/len(segments):.1%})")
+    print(f"Test set                        : {len(test_ecgs)} segments ({len(test_ecgs)/len(segments):.1%})")
+    np.savez_compressed(os.path.join(save_path, "MIT_BIH_train_segments.npz"), 
+                        ecgs=train_ecgs, labels=train_labels, records=train_names)
+
+    np.savez_compressed(os.path.join(save_path, "MIT_BIH_test_segments.npz"), 
+                        ecgs=test_ecgs, labels=test_labels, records=test_names)
         
 if __name__ == "__main__":
     segments, labels, names = loadData()
     # if segments is not None:
+        # split_train_test_per_record(segments, labels, names)
+    if segments is not None:
         # visualize_af_vs_normal_separate(segments, labels, names, fs=TARGET_FS)
-        # save_train_test_split(segments, labels, names, seed=42)
+        save_train_test_split_record(segments, labels, names, seed=42)
 

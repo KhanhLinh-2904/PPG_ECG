@@ -74,7 +74,7 @@ class ResNet50_1D(nn.Module):
         self.layer3 = self._make_layer(Bottleneck1D, BASE_WIDTH * 4, layers[2], stride=2)
         self.layer4 = self._make_layer(Bottleneck1D, BASE_WIDTH * 8, layers[3], stride=2)
 
-        self.avgpool = nn.AdaptiveAvgPool1d(1)
+        # self.avgpool = nn.AdaptiveAvgPool1d(1)
     
     def _make_layer(self, block, out_channels, blocks, stride=1):
         downsample = None

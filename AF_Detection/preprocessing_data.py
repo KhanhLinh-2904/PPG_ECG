@@ -124,6 +124,6 @@ if __name__ == "__main__":
     # )
     
     load_data_and_extract_features(
-        datapath="AF_Detection/deepbeat_ecg_reconstructions.npz",
-        output_name="AF_Detection/detect_af_deepbeat.npz"
+        datapath="datasets/total_z.npz",
+        output_name="AF_Detection/detect_af_MIMIC_no_rec.npz"
     )

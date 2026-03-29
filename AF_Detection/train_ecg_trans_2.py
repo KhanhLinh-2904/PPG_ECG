@@ -5,7 +5,8 @@ import torch.nn.functional as F
 from torch.utils.data import TensorDataset, DataLoader
 import numpy as np
 import random
-from ecg_transform import ECGTransformerModel, ECGAFClassifier, InfoNCEContrastiveLoss
+from sklearn.cluster import MiniBatchKMeans # Thư viện cho K-Means
+from ecg_transform_2 import ECGTransformerModel, ECGAFClassifier, HuBERTCrossEntropyLoss
 
 def set_seed(seed=42):
     random.seed(seed)
@@ -18,8 +19,9 @@ if __name__ == "__main__":
     # ==========================================
     # ⚙️ CẤU HÌNH CHẠY (BẬT/TẮT CÁC GIAI ĐOẠN)
     # ==========================================
-    DO_PRETRAIN = False  
+    DO_PRETRAIN = True  
     DO_FINETUNE = True   
+    NUM_CLUSTERS = 100 # Số lượng cụm K-Means cho HuBERT
     # ==========================================
 
     set_seed(42)
@@ -27,9 +29,9 @@ if __name__ == "__main__":
     print(f"🚀 Chạy trên thiết bị: {device}")
 
     # Tạo thư mục lưu trọng số
-    CHECKPOINT_DIR = "AF_Detection/checkpoints"
+    CHECKPOINT_DIR = "AF_Detection/checkpoints_hubert"
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
-    pretrained_path = os.path.join(CHECKPOINT_DIR, "pretrained_backbone.pth")
+    pretrained_path = os.path.join(CHECKPOINT_DIR, "pretrained_hubert_backbone.pth")
     print(f"📁 Thư mục lưu trọng số: {CHECKPOINT_DIR}")
 
     # --- CHUẨN BỊ DỮ LIỆU TRAIN ---
@@ -46,12 +48,13 @@ if __name__ == "__main__":
     if X_train.dim() == 2:
         X_train = X_train.unsqueeze(1)
 
-    train_dataset = TensorDataset(X_train, y_train)
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+    # Loader cho Fine-Tuning (Dùng nhãn thật y_train)
+    finetune_dataset = TensorDataset(X_train, y_train)
+    finetune_loader = DataLoader(finetune_dataset, batch_size=32, shuffle=True)
 
     # --- CHUẨN BỊ 3 TẬP DỮ LIỆU TEST ---
     print("⏳ Đang tải các tập dữ liệu Test...")
-    test_loaders = {} # Dùng dictionary để lưu tên dataset và loader tương ứng
+    test_loaders = {}
     
     test_files = {
         "MIT-BIH": 'processed_data/MIT_BIH_test_segments.npz',
@@ -62,27 +65,19 @@ if __name__ == "__main__":
     for name, path in test_files.items():
         try:
             t_data = np.load(path)
-            # Lưu ý: Cần kiểm tra tên khóa (key) trong các file .npz mới có giống với MIT-BIH không.
-            # Giả định chúng đều dùng khóa 'ecgs' và 'labels'.
             X_t = torch.tensor(t_data["ecgs"], dtype=torch.float32)
             y_t = torch.tensor(t_data["labels"], dtype=torch.long)
             
-            if X_t.dim() == 2:
-                X_t = X_t.unsqueeze(1)
+            if X_t.dim() == 2: X_t = X_t.unsqueeze(1)
                 
             t_dataset = TensorDataset(X_t, y_t)
             test_loaders[name] = DataLoader(t_dataset, batch_size=32, shuffle=False)
             print(f"  ✅ Đã tải thành công tập Test: {name} (Kích thước: {X_t.shape[0]} mẫu)")
         except FileNotFoundError:
-            print(f"  ⚠️ Lỗi: Không tìm thấy file Test '{path}'. Bỏ qua tập này.")
-        except KeyError as e:
-            print(f"  ⚠️ Lỗi: Không tìm thấy khóa {e} trong file '{path}'. Vui lòng kiểm tra lại cấu trúc file .npz.")
-
-    if not test_loaders:
-        print("⚠️ Không tải được tập Test nào!")
+            print(f"  ⚠️ Lỗi: Không tìm thấy file '{path}'. Bỏ qua tập này.")
 
     # --- (BACKBONE) ---
-    print("🧠 Khởi tạo mô hình Backbone...")
+    print("🧠 Khởi tạo mô hình Backbone (HuBERT Style)...")
     EMBED_DIM = 256
     transformer_encoder = nn.TransformerEncoder(
         nn.TransformerEncoderLayer(d_model=EMBED_DIM, nhead=8, dim_feedforward=1024, dropout=0.1, batch_first=True), 
@@ -92,41 +87,76 @@ if __name__ == "__main__":
     backbone = ECGTransformerModel(
         in_channels=X_train.shape[1],
         embed_dim=EMBED_DIM,
+        num_clusters=NUM_CLUSTERS, # Thay vq_dim bằng num_clusters
         conv_layers=[(256, 10, 5), (256, 3, 2), (256, 3, 2)], 
-        vq_dim=EMBED_DIM,
-        feature_grad_mult = 1.0,
+        feature_grad_mult=1.0,
         transformer_encoder=transformer_encoder
     ).to(device)
 
 
     # ==========================================================================
-    # GIAI ĐOẠN 1: PRE-TRAINING
+    # GIAI ĐOẠN 1: PRE-TRAINING (HUBERT)
     # ==========================================================================
     if DO_PRETRAIN:
         print("\n" + "="*50)
-        print("🌟 GIAI ĐOẠN 1: PRE-TRAINING BACKBONE")
+        print("🌟 GIAI ĐOẠN 1: TẠO NHÃN K-MEANS & PRE-TRAINING")
         print("="*50)
         
+        # 1. TẠO NHÃN GIẢ BẰNG K-MEANS
+        print("⏳ Bắt đầu trích xuất đặc trưng CNN để chạy K-means...")
+        backbone.eval()
+        all_features = []
+        
+        # Dùng DataLoader không shuffle để trích xuất feature giữ đúng thứ tự
+        feature_extract_loader = DataLoader(TensorDataset(X_train), batch_size=64, shuffle=False)
+        
+        with torch.no_grad():
+            for (batch_x,) in feature_extract_loader:
+                batch_x = batch_x.to(device)
+                # Trích xuất đặc trưng từ CNN (không qua Transformer, không mask)
+                features = backbone.feature_extractor(batch_x)
+                features = backbone.layer_norm(features.transpose(1, 2))
+                # Chuyển về CPU và numpy
+                all_features.append(features.cpu().numpy())
+                
+        # Nối lại và gom phẳng: shape (Toàn bộ điểm thời gian, Embed_Dim)
+        all_features_np = np.concatenate(all_features, axis=0)
+        B, T, D = all_features_np.shape
+        all_features_flat = all_features_np.reshape(-1, D)
+        
+        print(f"⏳ Đang chạy K-means với {NUM_CLUSTERS} cụm trên {all_features_flat.shape[0]} điểm dữ liệu...")
+        kmeans = MiniBatchKMeans(n_clusters=NUM_CLUSTERS, batch_size=10000, random_state=42)
+        kmeans_labels_flat = kmeans.fit_predict(all_features_flat)
+        
+        # Định dạng lại thành shape ban đầu (Batch, Time)
+        kmeans_labels = kmeans_labels_flat.reshape(B, T)
+        kmeans_labels_tensor = torch.tensor(kmeans_labels, dtype=torch.long)
+        print("✅ Hoàn tất tạo Pseudo-labels!")
+
+        # 2. TẠO DATALOADER CHO PRE-TRAIN (Ép ECG gốc với nhãn K-Means)
+        pretrain_dataset = TensorDataset(X_train, kmeans_labels_tensor)
+        pretrain_loader = DataLoader(pretrain_dataset, batch_size=32, shuffle=True)
+
+        # 3. TIẾN HÀNH PRE-TRAIN
         pretrain_epochs = 15
-        pretrain_criterion = InfoNCEContrastiveLoss(temperature=0.1).to(device)
+        pretrain_criterion = HuBERTCrossEntropyLoss().to(device) # Dùng hàm loss HuBERT
         pretrain_optimizer = torch.optim.AdamW(backbone.parameters(), lr=5e-4)
 
         for epoch in range(pretrain_epochs):
             backbone.train()
             running_loss = 0.0
             
-            backbone.quantizer.set_num_updates(epoch)
-            
-            for batch_idx, (inputs, _) in enumerate(train_loader):
-                inputs = inputs.to(device)
+            for batch_idx, (inputs, target_kmeans) in enumerate(pretrain_loader):
+                inputs, target_kmeans = inputs.to(device), target_kmeans.to(device)
                 
                 pretrain_optimizer.zero_grad()
                 outputs = backbone(inputs)
-                loss, c_loss = pretrain_criterion(
-                    local_reps = outputs["local_reps"], 
-                    q_targets = outputs["q_targets"], 
-                    mask_indices = outputs["mask_indices"], 
-                    perplexity = outputs["perplexity"]
+                
+                # Gọi hàm Loss truyền vào: logits, nhãn K-Means, và vị trí mask
+                loss = pretrain_criterion(
+                    logits=outputs["logits"],
+                    target_labels=target_kmeans,
+                    mask_indices=outputs["mask_indices"]
                 )
                 
                 if loss.requires_grad:
@@ -135,7 +165,7 @@ if __name__ == "__main__":
                     
                 running_loss += loss.item()
                 
-            print(f"Pre-train Epoch [{epoch+1}/{pretrain_epochs}] | Total Loss: {running_loss/len(train_loader):.4f}")
+            print(f"Pre-train Epoch [{epoch+1}/{pretrain_epochs}] | HuBERT Loss: {running_loss/len(pretrain_loader):.4f}")
 
         torch.save(backbone.state_dict(), pretrained_path)
         print(f"✅ Lưu Backbone thành công tại: {pretrained_path}")
@@ -151,11 +181,11 @@ if __name__ == "__main__":
 
 
     # ==========================================================================
-    # GIAI ĐOẠN 2: FINE-TUNING
+    # GIAI ĐOẠN 2: FINE-TUNING CHO PHÂN LOẠI AF
     # ==========================================================================
     if DO_FINETUNE:
         print("\n" + "="*50)
-        print("🎯 GIAI ĐOẠN 2: FINE-TUNING CHO PHÂN LOẠI AF")
+        print("🎯 GIAI ĐOẠN 2: FINE-TUNING (WARM-UP -> UNFREEZE)")
         print("="*50)
 
         model = ECGAFClassifier(
@@ -164,23 +194,41 @@ if __name__ == "__main__":
             hidden_dim=int(EMBED_DIM/2),
             num_classes=2,
             dropout_prob=0.3,
-            freeze_backbone=False
+            freeze_backbone=True
         ).to(device)
 
-        trainable_params = filter(lambda p: p.requires_grad, model.parameters())
-        
+        warmup_epochs = 5
         finetune_epochs = 20
         finetune_criterion = nn.CrossEntropyLoss()
-        finetune_optimizer = torch.optim.AdamW(trainable_params, lr=1e-4)
+        
+        trainable_params = filter(lambda p: p.requires_grad, model.parameters())
+        finetune_optimizer = torch.optim.AdamW(trainable_params, lr=1e-3)
+
         for epoch in range(finetune_epochs):
-            model.train()
-            # model.backbone.eval() # BỎ DÒNG NÀY VÌ ĐÃ UNFREEZE BACKBONE
             
+            if epoch == warmup_epochs:
+                print("\n" + "🔥"*25)
+                print(" HẾT WARM-UP: MỞ ĐÓNG BĂNG BACKBONE ĐỂ FINETUNE TOÀN BỘ")
+                print("🔥"*25)
+                
+                for param in model.backbone.parameters():
+                    param.requires_grad = True
+                
+                finetune_optimizer = torch.optim.AdamW([
+                    {'params': model.backbone.parameters(), 'lr': 1e-5},
+                    {'params': model.classifier.parameters(), 'lr': 1e-4}
+                ])
+
+            model.train()
+            if epoch < warmup_epochs:
+                model.backbone.eval()
+
             running_loss = 0.0
             correct_preds = 0
             total_samples = 0
             
-            for batch_idx, (inputs, labels) in enumerate(train_loader):
+            # Sử dụng finetune_loader (chứa nhãn phân loại AF thực sự y_train)
+            for batch_idx, (inputs, labels) in enumerate(finetune_loader):
                 inputs, labels = inputs.to(device), labels.to(device)
                 
                 finetune_optimizer.zero_grad()
@@ -198,9 +246,9 @@ if __name__ == "__main__":
             epoch_loss = running_loss / total_samples
             epoch_acc = (correct_preds / total_samples) * 100.0
 
-            print(f"\nEpoch [{epoch+1}/{finetune_epochs}] | Train Loss: {epoch_loss:.4f} - Train Acc: {epoch_acc:.2f}%")
+            phase_label = "Warm-up (Head only)" if epoch < warmup_epochs else "Fine-tune (All)"
+            print(f"\nEpoch [{epoch+1}/{finetune_epochs}] - {phase_label} | Train Loss: {epoch_loss:.4f} - Train Acc: {epoch_acc:.2f}%")
 
-            # --- ĐÁNH GIÁ TRÊN 3 TẬP TEST ---
             if test_loaders:
                 model.eval() 
                 with torch.no_grad():
@@ -225,6 +273,6 @@ if __name__ == "__main__":
                         
                         print(f"  👉 Test [{test_name}]: Loss = {epoch_test_loss:.4f} | Acc = {epoch_test_acc:.2f}%")
 
-        final_path = os.path.join(CHECKPOINT_DIR, "final_af_classifier_unfreezed.pth")
+        final_path = os.path.join(CHECKPOINT_DIR, "final_af_classifier_hubert.pth")
         torch.save(model.state_dict(), final_path)
         print(f"\n🎉 KẾT THÚC CHU TRÌNH! Lưu mô hình tại: {final_path}")

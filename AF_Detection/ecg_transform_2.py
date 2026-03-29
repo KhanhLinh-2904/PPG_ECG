@@ -72,118 +72,93 @@ class ConvPositionalEncoding(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.pos_conv(x.transpose(1, 2)).transpose(1, 2)
 
-class GumbelVectorQuantizer(nn.Module):
-    def __init__(self, dim, num_vars=320, temp=(2.0, 0.5, 0.999995), groups=2, combine_groups=False, vq_dim=256, time_first=False):
+class RandomCosineFeatureMasking(nn.Module):
+    def __init__(self, embed_dim: int, mask_length: int = 10, max_prob: float = 0.8):
         super().__init__()
-        self.groups = groups
-        self.num_vars = num_vars
-        self.time_first = time_first
-        self.num_updates = 0
-        
-        var_dim = vq_dim // groups
-        self.vars = nn.Parameter(torch.FloatTensor(1, groups * num_vars, var_dim))
-        nn.init.uniform_(self.vars)
-
-        self.weight_proj = nn.Linear(dim, groups * num_vars)
-        nn.init.normal_(self.weight_proj.weight, mean=0, std=1)
-        nn.init.zeros_(self.weight_proj.bias)
-
-        self.max_temp, self.min_temp, self.temp_decay = temp
-        self.curr_temp = self.max_temp
-
-    def set_num_updates(self, num_updates):
-        self.curr_temp = max(self.max_temp * self.temp_decay ** num_updates, self.min_temp)
-
-    def forward(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
-        if not self.time_first: x = x.transpose(1, 2)
-        bsz, tsz, fsz = x.shape
-        x = self.weight_proj(x).view(bsz * tsz * self.groups, -1)
-        zero_x = x.new_zeros(*x.shape)
-        _, k = x.max(-1)
-        hard_x = x.new_zeros(*x.shape).scatter_(-1, k.view(-1, 1), 1.0).view(bsz * tsz, self.groups, -1)
-        hard_probs = torch.mean(hard_x.float(), dim=0)
-
-        code_perplexity = torch.exp(-torch.sum(hard_probs * torch.log(hard_probs + 1e-7), dim=-1)).sum()
-        if self.training:
-            x_idx = F.gumbel_softmax(x.float(), tau=self.curr_temp, hard=True).type_as(x)
-        else:
-            x_idx = hard_x.view(bsz * tsz * self.groups, -1)
-      
-        x_idx = x_idx.view(bsz * tsz, -1).unsqueeze(-1)
-     
-        q_vec = (x_idx * self.vars).view(bsz * tsz, self.groups, self.num_vars, -1).sum(-2)
-        q_vec = q_vec.view(bsz, tsz, -1)
-        targets = x.view(bsz * tsz * self.groups, -1).argmax(dim=-1).view(bsz, tsz, self.groups).detach()
-        if not self.time_first: q_vec = q_vec.transpose(1, 2)
-        return {"q": q_vec, "targets": targets, "perplexity": code_perplexity}
-
-
-class VectorizedFeatureMasking(nn.Module):
-    def __init__(self, embed_dim: int, mask_prob: float = 0.065, mask_length: int = 10):
-        super().__init__()
-        self.mask_prob = mask_prob
         self.mask_length = mask_length
-        # Khởi tạo embedding cho các vị trí bị mask
+        self.max_prob = max_prob 
         self.mask_emb = nn.Parameter(torch.FloatTensor(embed_dim))
         nn.init.uniform_(self.mask_emb)
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        if not self.training or self.mask_prob == 0.0:
+        if not self.training:
             return x, torch.zeros(x.shape[:2], dtype=torch.bool, device=x.device)
 
         bsz, seq_len, _ = x.shape
-        
-        # 1. Tính toán xác suất để một vị trí trở thành "điểm bắt đầu" của mask span
-        # Điều này giúp tỷ lệ token bị mask thực tế xấp xỉ với mask_prob
-        mask_start_prob = self.mask_prob / self.mask_length
-        
-        # 2. Tạo ma trận boolean ngẫu nhiên (hoàn toàn song song bằng toán tử tensor)
+        random_angle = torch.rand(1).item() * (math.pi / 2)
+        current_mask_prob = math.cos(random_angle) * self.max_prob
+
+        if current_mask_prob < 1e-4:
+            return x, torch.zeros(x.shape[:2], dtype=torch.bool, device=x.device)
+
+        mask_start_prob = current_mask_prob / self.mask_length
         mask_starts = torch.rand((bsz, seq_len), device=x.device) < mask_start_prob
-        
-        # Tránh việc bắt đầu mask ở những vị trí quá sát cuối sequence
         mask_starts[:, -self.mask_length + 1:] = False
         
         if not mask_starts.any():
             return x, torch.zeros(x.shape[:2], dtype=torch.bool, device=x.device)
 
-        # 3. Mở rộng (Dilate) các điểm bắt đầu thành các đoạn (spans) dài 'mask_length'
-        mask_starts_float = mask_starts.float().unsqueeze(1) # Shape: (bsz, 1, seq_len)
-        
-        # Tự thêm padding vào bên trái của sequence thay vì dùng tham số padding của max_pool1d
-        # (pad_left, pad_right) -> đệm thêm (mask_length - 1) số 0 vào bên trái
+        mask_starts_float = mask_starts.float().unsqueeze(1) 
         padded_starts = F.pad(mask_starts_float, (self.mask_length - 1, 0))
         
-        # Áp dụng MaxPool1d trên tensor đã được đệm
         mask_expanded = F.max_pool1d(
             padded_starts, 
             kernel_size=self.mask_length, 
             stride=1, 
             padding=0
         )
-        
-        # Kích thước đầu ra giờ đây sẽ tự động khớp chính xác với seq_len ban đầu
         mask = mask_expanded[:, 0, :].bool()
 
-        # 4. Thay thế các vị trí bị mask bằng learnable embedding
         x_masked = x.clone() 
         x_masked[mask] = self.mask_emb
         
         return x_masked, mask
 
+# ==========================================
+# HUBERT LOSS (Thay thế cho Contrastive Loss)
+# ==========================================
+class HuBERTCrossEntropyLoss(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, logits: torch.Tensor, target_labels: torch.Tensor, mask_indices: torch.Tensor):
+        """
+        logits: Đầu ra của mô hình (Batch, Time, Num_Clusters)
+        target_labels: Nhãn K-means được tạo offline (Batch, Time)
+        mask_indices: Ma trận boolean chỉ định vị trí bị mask (Batch, Time)
+        """
+        # Chỉ lấy các vị trí đã bị che để tính Loss
+        logits_masked = logits[mask_indices]       
+        targets_masked = target_labels[mask_indices] 
+        
+        if logits_masked.size(0) == 0:
+            return torch.tensor(0.0, device=logits.device, requires_grad=True)
+
+        return F.cross_entropy(logits_masked, targets_masked)
+
+# ==========================================
+# MÔ HÌNH BACKBONE THEO PHONG CÁCH HUBERT
+# ==========================================
 class ECGTransformerModel(nn.Module):
-    def __init__(self, in_channels: int = 1, embed_dim: int = 256, conv_layers: List[Tuple[int, int, int]] = [(256, 2, 2)]*4, extractor_mode: str = "layer_norm", conv_bias: bool = False, feature_grad_mult: float = 1.0, vq_dim: int = 256, transformer_encoder: Optional[nn.Module] = None):
+    def __init__(self, in_channels: int = 1, embed_dim: int = 256, num_clusters: int = 100, conv_layers: List[Tuple[int, int, int]] = [(256, 2, 2)]*4, extractor_mode: str = "layer_norm", conv_bias: bool = False, feature_grad_mult: float = 1.0, transformer_encoder: Optional[nn.Module] = None):
         super().__init__()
         self.conv_layers_cfg = conv_layers
         self.cnn_out_dim = conv_layers[-1][0]
         self.feature_grad_mult = feature_grad_mult
+        self.num_clusters = num_clusters
 
         self.feature_extractor = ConvFeatureExtraction(conv_layers=self.conv_layers_cfg, in_d=in_channels, mode=extractor_mode, conv_bias=conv_bias)
         self.layer_norm = nn.LayerNorm(self.cnn_out_dim)
-        self.quantizer = GumbelVectorQuantizer(dim=self.cnn_out_dim, groups=2, num_vars=320, vq_dim=vq_dim)
+        
+        # Đã loại bỏ Quantizer tại đây
+        
         self.post_extract_proj = nn.Linear(self.cnn_out_dim, embed_dim) if self.cnn_out_dim != embed_dim else None
-        self.masker = VectorizedFeatureMasking(embed_dim=embed_dim, mask_prob=0.4, mask_length=4)
+        self.masker = RandomCosineFeatureMasking(embed_dim=embed_dim, mask_length=4, max_prob=0.8)
         self.conv_pos = ConvPositionalEncoding(embed_dim=embed_dim, kernel_size=128, groups=16)
         self.encoder = transformer_encoder
+        
+        # Thêm Lớp chiếu ra số lượng cụm K-means để làm bài toán phân loại nhãn giả
+        self.label_proj = nn.Linear(embed_dim, self.num_clusters)
 
     def _compute_output_lengths(self, input_lengths: torch.Tensor) -> torch.Tensor:
         lengths = input_lengths.float()
@@ -198,9 +173,6 @@ class ECGTransformerModel(nn.Module):
                 latent_features = GradMultiply.apply(latent_features, self.feature_grad_mult)
         else:
             with torch.no_grad(): latent_features = self.feature_extractor(source)
-
-        q_result = self.quantizer(latent_features)
-        q_targets = q_result["q"]
 
         features = self.layer_norm(latent_features.transpose(1, 2))
 
@@ -227,12 +199,14 @@ class ECGTransformerModel(nn.Module):
         else:
             local_reps = masked_features 
 
+        # Chiếu ra kích thước K-means clusters
+        logits = self.label_proj(local_reps)
+
         return {
-            "local_reps": local_reps,
-            "q_targets": q_targets.transpose(1, 2),
+            "local_reps": local_reps,     # Vẫn trả về để dùng cho fine-tuning Classifier sau này
+            "logits": logits,             # Trả về để dùng tính loss ở giai đoạn Pre-train
             "mask_indices": mask_indices,
-            "padding_mask": new_padding_mask,         
-            "perplexity": q_result["perplexity"]
+            "padding_mask": new_padding_mask
         }
 
 class ECGAFClassifier(nn.Module):
@@ -261,7 +235,6 @@ class ECGAFClassifier(nn.Module):
             nn.Dropout(dropout_prob),
 
             nn.Linear(hidden_dim // 4, num_classes)
-
         )
 
     def forward(self, source: torch.Tensor, padding_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
@@ -279,45 +252,31 @@ class ECGAFClassifier(nn.Module):
         logits = self.classifier(global_reps)
         return logits
     
-class InfoNCEContrastiveLoss(nn.Module):
-    def __init__(self, temperature=0.1, diversity_weight=0.1, num_vars=320):
-        super().__init__()
-        self.temperature = temperature
-        self.diversity_weight = diversity_weight
-        self.num_vars = num_vars # Số lượng mã từ điển (để tính trần perplexity)
-
-    def forward(self, local_reps, q_targets, mask_indices, perplexity):
-        # ==========================================
-        # 1. LOCAL CONTRASTIVE LOSS (Bắt chước Q)
-        # ==========================================
-        c = local_reps[mask_indices]  
-        q = q_targets[mask_indices]   
-
-        if c.size(0) == 0:
-            local_loss = torch.tensor(0.0, device=c.device, requires_grad=True)
-        else:
-            c = F.normalize(c, p=2, dim=-1)
-            q = F.normalize(q, p=2, dim=-1)
-            logits_local = torch.matmul(c, q.transpose(0, 1)) / self.temperature
-            labels_local = torch.arange(c.size(0), device=c.device)
-            local_loss = F.cross_entropy(logits_local, labels_local)
-
-
-        diversity_penalty = (self.num_vars - perplexity) / self.num_vars
-        print("local_loss: ", local_loss)
-        print("diversity_penalty: ", diversity_penalty)
-
-       
-        total_loss = local_loss  + (self.diversity_weight * diversity_penalty)
-        
-        return total_loss, local_loss
-    
-
 if __name__ == "__main__":
-    batch = 1
+    # Test thử kích thước đầu ra
+    batch = 2
     channel = 1
     length = 2400
     ecg_dum = torch.randn(batch, channel, length)
-    model = ECGTransformerModel()
+    
+    # Pre-train thử
+    model = ECGTransformerModel(num_clusters=100)
     result = model(ecg_dum)
-    print("ecg dummy: ", ecg_dum)
+    
+    print("=== HUBERT PRE-TRAINING OUTPUT ===")
+    print("Logits K-Means shape:", result["logits"].shape) # Mong đợi: (Batch, Time_Steps, Num_Clusters)
+    print("Mask Indices shape:", result["mask_indices"].shape)
+    
+    # Giả lập nhãn được tạo từ K-means offline
+    dummy_kmeans_labels = torch.randint(0, 100, (batch, result["logits"].shape[1]))
+    
+    # Test hàm Loss
+    criterion = HuBERTCrossEntropyLoss()
+    loss = criterion(result["logits"], dummy_kmeans_labels, result["mask_indices"])
+    print(f"\nHuBERT Pre-train Loss: {loss.item():.4f}")
+    
+    # Test thử với Classifier
+    classifier = ECGAFClassifier(backbone=model)
+    cls_out = classifier(ecg_dum)
+    print("\n=== CLASSIFIER FINE-TUNING OUTPUT ===")
+    print("Classifier Logits shape:", cls_out.shape) # Mong đợi: (Batch, 2)

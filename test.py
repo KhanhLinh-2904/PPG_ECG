@@ -14,8 +14,8 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 BATCH_SIZE = 64
 INPUT_LENGTH = 2400
 OUTPUT_EMBED_DIM = 128
-TEST_DATA_PATH = 'datasets/total_z.npz'
-CLIP_MODEL_PATH = "multitask_best_model_good.pth" 
+TEST_DATA_PATH = 'processed_data/mimic3_v1_2400_test.npz'
+CLIP_MODEL_PATH = "multitask_best_model.pth" 
 
 
 def set_seed(seed):
@@ -133,6 +133,8 @@ def run_visualization():
     with torch.no_grad():
         for i, (ecg, ppg, record_names) in enumerate(test_loader):
             ppg_input = ppg.to(DEVICE).float().unsqueeze(1)
+            # ecg_input = ecg.to(DEVICE).float().unsqueeze(1)
+
             
             predicted_ecg = model(None, ppg_input)
 
@@ -169,6 +171,8 @@ def run_loss():
     with torch.no_grad():
         for i, (ecg, ppg, record_names) in enumerate(test_loader):
             ppg_input = ppg.to(DEVICE).float().unsqueeze(1)
+            # ecg_input = ecg.to(DEVICE).float().unsqueeze(1)
+
             
             predicted_ecg = model(None, ppg_input)
 
@@ -232,7 +236,7 @@ def save_ecg_reconstruction_deepbeat(output_path="AF_Detection/ecg_deepbeat_reco
     print(f"Saved DeepBeat reconstructions to {output_path}")
 
 if __name__ == "__main__":
-    run_visualization()
-    # run_loss()
+    # run_visualization()
+    run_loss()
     # save_ecg_reconstruction("AF_Detection/total_ecg_reconstructions.npz")
     # save_ecg_reconstruction_deepbeat("AF_Detection/deepbeat_ecg_reconstructions.npz")

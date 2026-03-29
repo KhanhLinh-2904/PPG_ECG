@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from torch.utils.data import TensorDataset, DataLoader
 import numpy as np
 import random
-from ecg_transform import ECGTransformerModel, ECGAFClassifier, InfoNCEContrastiveLoss
+from ecg_transform_copy import ECGTransformerModel, ECGAFClassifier, StandardInfoNCEContrastiveLoss
 
 def set_seed(seed=42):
     random.seed(seed)
@@ -18,7 +18,7 @@ if __name__ == "__main__":
     # ==========================================
     # ⚙️ CẤU HÌNH CHẠY (BẬT/TẮT CÁC GIAI ĐOẠN)
     # ==========================================
-    DO_PRETRAIN = False  
+    DO_PRETRAIN = True  
     DO_FINETUNE = True   
     # ==========================================
 
@@ -108,25 +108,24 @@ if __name__ == "__main__":
         print("="*50)
         
         pretrain_epochs = 15
-        pretrain_criterion = InfoNCEContrastiveLoss(temperature=0.1).to(device)
+        pretrain_criterion = StandardInfoNCEContrastiveLoss(temperature=0.1).to(device)
         pretrain_optimizer = torch.optim.AdamW(backbone.parameters(), lr=5e-4)
 
         for epoch in range(pretrain_epochs):
             backbone.train()
             running_loss = 0.0
             
-            backbone.quantizer.set_num_updates(epoch)
-            
+           
             for batch_idx, (inputs, _) in enumerate(train_loader):
                 inputs = inputs.to(device)
                 
                 pretrain_optimizer.zero_grad()
                 outputs = backbone(inputs)
-                loss, c_loss = pretrain_criterion(
-                    local_reps = outputs["local_reps"], 
-                    q_targets = outputs["q_targets"], 
-                    mask_indices = outputs["mask_indices"], 
-                    perplexity = outputs["perplexity"]
+                loss, c_loss, vq_loss = pretrain_criterion(
+                    local_reps=outputs["local_reps"],
+                    q_targets=outputs["q_targets"],
+                    mask_indices=outputs["mask_indices"],
+                    commitment_loss=outputs["commitment_loss"]
                 )
                 
                 if loss.requires_grad:
@@ -151,31 +150,59 @@ if __name__ == "__main__":
 
 
     # ==========================================================================
-    # GIAI ĐOẠN 2: FINE-TUNING
+    # GIAI ĐOẠN 2: FINE-TUNING (KẾT HỢP WARM-UP & GRADUAL UNFREEZING)
     # ==========================================================================
     if DO_FINETUNE:
         print("\n" + "="*50)
         print("🎯 GIAI ĐOẠN 2: FINE-TUNING CHO PHÂN LOẠI AF")
         print("="*50)
 
+        # Khởi tạo mô hình với trạng thái ĐÓNG BĂNG backbone ban đầu
         model = ECGAFClassifier(
             backbone=backbone,
             embed_dim=EMBED_DIM,
             hidden_dim=int(EMBED_DIM/2),
             num_classes=2,
             dropout_prob=0.3,
-            freeze_backbone=False
+            freeze_backbone=True  # Quan trọng: True để đóng băng lúc đầu
         ).to(device)
 
-        trainable_params = filter(lambda p: p.requires_grad, model.parameters())
-        
+        warmup_epochs = 5  # Số epoch chỉ train phần classifier head
         finetune_epochs = 20
         finetune_criterion = nn.CrossEntropyLoss()
-        finetune_optimizer = torch.optim.AdamW(trainable_params, lr=1e-4)
+        
+        # Optimizer ban đầu chỉ huấn luyện phần Classifier với LR lớn
+        trainable_params = filter(lambda p: p.requires_grad, model.parameters())
+        finetune_optimizer = torch.optim.AdamW(trainable_params, lr=1e-3)
+
         for epoch in range(finetune_epochs):
-            model.train()
-            # model.backbone.eval() # BỎ DÒNG NÀY VÌ ĐÃ UNFREEZE BACKBONE
             
+            # ------------------------------------------------------------------
+            # KIỂM TRA MỐC UNFREEZE
+            # ------------------------------------------------------------------
+            if epoch == warmup_epochs:
+                print("\n" + "🔥"*25)
+                print(" HẾT WARM-UP: MỞ ĐÓNG BĂNG BACKBONE ĐỂ FINETUNE TOÀN BỘ")
+                print("🔥"*25)
+                
+                # Mở khóa gradient cho backbone
+                for param in model.backbone.parameters():
+                    param.requires_grad = True
+                
+                # Tạo lại Optimizer: 
+                # Cấp LR nhỏ (1e-5) cho backbone để không làm mất feature đã học
+                # Giữ nguyên LR vừa phải (1e-4) cho phần Classifier
+                finetune_optimizer = torch.optim.AdamW([
+                    {'params': model.backbone.parameters(), 'lr': 1e-5},
+                    {'params': model.classifier.parameters(), 'lr': 1e-4}
+                ])
+            # ------------------------------------------------------------------
+
+            # Xử lý chế độ Train/Eval riêng rẽ khi đang trong giai đoạn Warm-up
+            model.train()
+            if epoch < warmup_epochs:
+                model.backbone.eval() # Giữ BatchNorm/Dropout của backbone đứng im trong lúc warm-up
+
             running_loss = 0.0
             correct_preds = 0
             total_samples = 0
@@ -198,7 +225,8 @@ if __name__ == "__main__":
             epoch_loss = running_loss / total_samples
             epoch_acc = (correct_preds / total_samples) * 100.0
 
-            print(f"\nEpoch [{epoch+1}/{finetune_epochs}] | Train Loss: {epoch_loss:.4f} - Train Acc: {epoch_acc:.2f}%")
+            phase_label = "Warm-up (Head only)" if epoch < warmup_epochs else "Fine-tune (All)"
+            print(f"\nEpoch [{epoch+1}/{finetune_epochs}] - {phase_label} | Train Loss: {epoch_loss:.4f} - Train Acc: {epoch_acc:.2f}%")
 
             # --- ĐÁNH GIÁ TRÊN 3 TẬP TEST ---
             if test_loaders:
@@ -225,6 +253,6 @@ if __name__ == "__main__":
                         
                         print(f"  👉 Test [{test_name}]: Loss = {epoch_test_loss:.4f} | Acc = {epoch_test_acc:.2f}%")
 
-        final_path = os.path.join(CHECKPOINT_DIR, "final_af_classifier_unfreezed.pth")
+        final_path = os.path.join(CHECKPOINT_DIR, "final_af_classifier.pth")
         torch.save(model.state_dict(), final_path)
         print(f"\n🎉 KẾT THÚC CHU TRÌNH! Lưu mô hình tại: {final_path}")

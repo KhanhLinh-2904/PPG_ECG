@@ -72,88 +72,67 @@ class ConvPositionalEncoding(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.pos_conv(x.transpose(1, 2)).transpose(1, 2)
 
-class GumbelVectorQuantizer(nn.Module):
-    def __init__(self, dim, num_vars=320, temp=(2.0, 0.5, 0.999995), groups=2, combine_groups=False, vq_dim=256, time_first=False):
+
+class RandomCosineFeatureMasking(nn.Module):
+    def __init__(self, embed_dim: int, mask_length: int = 10, max_prob: float = 0.8):
+        """
+        Args:
+            embed_dim: Số chiều của đặc trưng (channel).
+            mask_length: Độ dài của mỗi đoạn bị che (span length).
+            max_prob: Tỷ lệ che tối đa để tránh trường hợp che mất 100% tín hiệu.
+        """
         super().__init__()
-        self.groups = groups
-        self.num_vars = num_vars
-        self.time_first = time_first
-        self.num_updates = 0
-        
-        var_dim = vq_dim // groups
-        self.vars = nn.Parameter(torch.FloatTensor(1, groups * num_vars, var_dim))
-        nn.init.uniform_(self.vars)
-
-        self.weight_proj = nn.Linear(dim, groups * num_vars)
-        nn.init.normal_(self.weight_proj.weight, mean=0, std=1)
-        nn.init.zeros_(self.weight_proj.bias)
-
-        self.max_temp, self.min_temp, self.temp_decay = temp
-        self.curr_temp = self.max_temp
-
-    def set_num_updates(self, num_updates):
-        self.curr_temp = max(self.max_temp * self.temp_decay ** num_updates, self.min_temp)
-
-    def forward(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
-        if not self.time_first: x = x.transpose(1, 2)
-        bsz, tsz, fsz = x.shape
-        x = self.weight_proj(x).view(bsz * tsz * self.groups, -1)
-        zero_x = x.new_zeros(*x.shape)
-        _, k = x.max(-1)
-        hard_x = x.new_zeros(*x.shape).scatter_(-1, k.view(-1, 1), 1.0).view(bsz * tsz, self.groups, -1)
-        hard_probs = torch.mean(hard_x.float(), dim=0)
-
-        code_perplexity = torch.exp(-torch.sum(hard_probs * torch.log(hard_probs + 1e-7), dim=-1)).sum()
-        if self.training:
-            x_idx = F.gumbel_softmax(x.float(), tau=self.curr_temp, hard=True).type_as(x)
-        else:
-            x_idx = hard_x.view(bsz * tsz * self.groups, -1)
-      
-        x_idx = x_idx.view(bsz * tsz, -1).unsqueeze(-1)
-     
-        q_vec = (x_idx * self.vars).view(bsz * tsz, self.groups, self.num_vars, -1).sum(-2)
-        q_vec = q_vec.view(bsz, tsz, -1)
-        targets = x.view(bsz * tsz * self.groups, -1).argmax(dim=-1).view(bsz, tsz, self.groups).detach()
-        if not self.time_first: q_vec = q_vec.transpose(1, 2)
-        return {"q": q_vec, "targets": targets, "perplexity": code_perplexity}
-
-
-class VectorizedFeatureMasking(nn.Module):
-    def __init__(self, embed_dim: int, mask_prob: float = 0.065, mask_length: int = 10):
-        super().__init__()
-        self.mask_prob = mask_prob
         self.mask_length = mask_length
-        # Khởi tạo embedding cho các vị trí bị mask
+        self.max_prob = max_prob 
         self.mask_emb = nn.Parameter(torch.FloatTensor(embed_dim))
         nn.init.uniform_(self.mask_emb)
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        if not self.training or self.mask_prob == 0.0:
+        # Khi validation/test thì không mask
+        if not self.training:
             return x, torch.zeros(x.shape[:2], dtype=torch.bool, device=x.device)
 
         bsz, seq_len, _ = x.shape
+
+        # ==========================================
+        # RANDOM COSINE PROBABILITY GENERATION
+        # ==========================================
+        # Sinh một góc ngẫu nhiên từ 0 đến Pi/2
+        random_angle = torch.rand(1).item() * (math.pi / 2)
         
-        # 1. Tính toán xác suất để một vị trí trở thành "điểm bắt đầu" của mask span
-        # Điều này giúp tỷ lệ token bị mask thực tế xấp xỉ với mask_prob
-        mask_start_prob = self.mask_prob / self.mask_length
+        # Hàm Cosine sẽ chuyển góc này thành một xác suất từ 0 đến 1
+        # Nhân với max_prob để giới hạn mức trần (ví dụ: [0, 0.8])
+        current_mask_prob = math.cos(random_angle) * self.max_prob
+
+        # Nếu xác suất quá nhỏ (gần 0), bỏ qua việc mask để tiết kiệm tính toán
+        if current_mask_prob < 1e-4:
+            return x, torch.zeros(x.shape[:2], dtype=torch.bool, device=x.device)
+
+        # In ra màn hình để bạn dễ debug theo dõi sự thay đổi (có thể comment lại khi train thật)
+        # print(f"Dynamic mask_prob: {current_mask_prob:.4f}, seq_len: {seq_len}")
+
+        # ==========================================
+        # VECTORIZED SPAN MASKING
+        # ==========================================
+        # Tính toán xác suất điểm bắt đầu
+        mask_start_prob = current_mask_prob / self.mask_length
         
-        # 2. Tạo ma trận boolean ngẫu nhiên (hoàn toàn song song bằng toán tử tensor)
+        # Tung đồng xu cho toàn bộ các điểm trong batch
         mask_starts = torch.rand((bsz, seq_len), device=x.device) < mask_start_prob
         
-        # Tránh việc bắt đầu mask ở những vị trí quá sát cuối sequence
+        # Chặn không cho bắt đầu mask ở đoạn sát cuối
         mask_starts[:, -self.mask_length + 1:] = False
         
         if not mask_starts.any():
             return x, torch.zeros(x.shape[:2], dtype=torch.bool, device=x.device)
 
-        # 3. Mở rộng (Dilate) các điểm bắt đầu thành các đoạn (spans) dài 'mask_length'
-        mask_starts_float = mask_starts.float().unsqueeze(1) # Shape: (bsz, 1, seq_len)
+        # Chuyển đổi sang float và thêm chiều kênh (channel) để đưa qua MaxPool1d
+        mask_starts_float = mask_starts.float().unsqueeze(1) 
         
-        # Tự thêm padding vào bên trái của sequence thay vì dùng tham số padding của max_pool1d
-        # (pad_left, pad_right) -> đệm thêm (mask_length - 1) số 0 vào bên trái
+        # Tự đệm (pad) bằng 0 vào bên trái để chiều dài đầu ra khớp chuẩn với seq_len
         padded_starts = F.pad(mask_starts_float, (self.mask_length - 1, 0))
         
-        # Áp dụng MaxPool1d trên tensor đã được đệm
+        # Kéo dài điểm start thành đoạn dài 'mask_length'
         mask_expanded = F.max_pool1d(
             padded_starts, 
             kernel_size=self.mask_length, 
@@ -161,14 +140,123 @@ class VectorizedFeatureMasking(nn.Module):
             padding=0
         )
         
-        # Kích thước đầu ra giờ đây sẽ tự động khớp chính xác với seq_len ban đầu
+        # Ép kiểu về ma trận Boolean
         mask = mask_expanded[:, 0, :].bool()
 
-        # 4. Thay thế các vị trí bị mask bằng learnable embedding
+        # Thay thế bằng Mask Embedding
         x_masked = x.clone() 
         x_masked[mask] = self.mask_emb
         
         return x_masked, mask
+    
+class StandardVectorQuantizer(nn.Module):
+    def __init__(self, dim: int, num_vars: int = 320, groups: int = 2, vq_dim: int = 256, time_first: bool = False, commitment_weight: float = 0.25):
+        super().__init__()
+        self.groups = groups
+        self.num_vars = num_vars
+        self.time_first = time_first
+        self.commitment_weight = commitment_weight # Hệ số beta cho Commitment Loss
+        
+        var_dim = vq_dim // groups
+        # Khởi tạo Codebook (Từ điển): (1, số nhóm, số từ, kích thước 1 từ)
+        self.vars = nn.Parameter(torch.FloatTensor(1, groups, num_vars, var_dim))
+        nn.init.uniform_(self.vars, -1 / num_vars, 1 / num_vars)
+
+        self.weight_proj = nn.Linear(dim, groups * var_dim)
+        nn.init.normal_(self.weight_proj.weight, mean=0, std=1)
+        nn.init.zeros_(self.weight_proj.bias)
+
+    def forward(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
+        if not self.time_first: 
+            x = x.transpose(1, 2)
+            
+        bsz, tsz, fsz = x.shape
+        
+        # Chiếu và định dạng lại tensor: (Batch * Time, Groups, Var_Dim)
+        x = self.weight_proj(x)
+        x = x.view(bsz * tsz, self.groups, -1)
+        
+        q_vec = torch.zeros_like(x)
+        encoding_indices = torch.zeros(bsz * tsz, self.groups, dtype=torch.long, device=x.device)
+        
+        # Duyệt qua từng nhóm để tìm vector gần nhất trong codebook
+        for g in range(self.groups):
+            # Tính khoảng cách Euclidean L2 giữa x và các vector trong codebook
+            # x[:, g, :]: (B*T, var_dim) | self.vars[0, g, :]: (num_vars, var_dim)
+            distances = torch.cdist(x[:, g, :], self.vars[0, g, :], p=2.0)
+            
+            # Chọn index của vector có khoảng cách nhỏ nhất
+            idx = torch.argmin(distances, dim=-1)
+            encoding_indices[:, g] = idx
+            
+            # Lấy vector ra từ codebook
+            q_vec[:, g, :] = self.vars[0, g, idx]
+            
+        # ==========================================
+        # COMMITMENT LOSS (VQ-VAE)
+        # ==========================================
+        # q_loss: Ép codebook dịch chuyển về phía đầu ra của CNN
+        # e_loss: Ép đầu ra CNN bám sát vào vector trong codebook
+        q_loss = F.mse_loss(q_vec.detach(), x)
+        e_loss = F.mse_loss(q_vec, x.detach())
+        commitment_loss = q_loss + self.commitment_weight * e_loss
+
+        # ==========================================
+        # STRAIGHT-THROUGH ESTIMATOR (STE)
+        # ==========================================
+        # Kỹ thuật copy gradient: Ở lượt đi (Forward) giá trị là q_vec
+        # Nhưng ở lượt về (Backward) gradient của q_vec sẽ truyền thẳng sang cho x
+        q_vec_st = x + (q_vec - x).detach()
+        
+        # Trả về shape nguyên bản
+        q_vec_st = q_vec_st.view(bsz, tsz, -1)
+        targets = encoding_indices.view(bsz, tsz, self.groups).detach()
+        
+        if not self.time_first: 
+            q_vec_st = q_vec_st.transpose(1, 2)
+            
+        return {
+            "q": q_vec_st, 
+            "targets": targets, 
+            "commitment_loss": commitment_loss
+        }
+
+class StandardInfoNCEContrastiveLoss(nn.Module):
+    def __init__(self, temperature=0.1, beta_commitment=1.0):
+        """
+        beta_commitment: Trọng số để cân bằng giữa Contrastive Loss và Commitment Loss.
+        """
+        super().__init__()
+        self.temperature = temperature
+        self.beta_commitment = beta_commitment
+
+    def forward(self, local_reps, q_targets, mask_indices, commitment_loss):
+        # ==========================================
+        # 1. LOCAL CONTRASTIVE LOSS (Bắt chước Q)
+        # ==========================================
+        c = local_reps[mask_indices]  
+        q = q_targets[mask_indices]   
+
+        if c.size(0) == 0:
+            local_loss = torch.tensor(0.0, device=c.device, requires_grad=True)
+        else:
+            c = F.normalize(c, p=2, dim=-1)
+            q = F.normalize(q, p=2, dim=-1)
+            logits_local = torch.matmul(c, q.transpose(0, 1)) / self.temperature
+            labels_local = torch.arange(c.size(0), device=c.device)
+            local_loss = F.cross_entropy(logits_local, labels_local)
+
+        # ==========================================
+        # 2. TỔNG LOSS = CONTRASTIVE + COMMITMENT
+        # ==========================================
+        # Không cần phạt diversity (perplexity) nữa
+        total_loss = local_loss + (self.beta_commitment * commitment_loss)
+        
+        # Print debug để dễ theo dõi quá trình hội tụ
+        # print(f"Contrastive Loss: {local_loss.item():.4f} | Commitment Loss: {commitment_loss.item():.4f}")
+        
+        return total_loss, local_loss, commitment_loss
+
 
 class ECGTransformerModel(nn.Module):
     def __init__(self, in_channels: int = 1, embed_dim: int = 256, conv_layers: List[Tuple[int, int, int]] = [(256, 2, 2)]*4, extractor_mode: str = "layer_norm", conv_bias: bool = False, feature_grad_mult: float = 1.0, vq_dim: int = 256, transformer_encoder: Optional[nn.Module] = None):
@@ -179,9 +267,9 @@ class ECGTransformerModel(nn.Module):
 
         self.feature_extractor = ConvFeatureExtraction(conv_layers=self.conv_layers_cfg, in_d=in_channels, mode=extractor_mode, conv_bias=conv_bias)
         self.layer_norm = nn.LayerNorm(self.cnn_out_dim)
-        self.quantizer = GumbelVectorQuantizer(dim=self.cnn_out_dim, groups=2, num_vars=320, vq_dim=vq_dim)
+        self.quantizer = StandardVectorQuantizer(dim=self.cnn_out_dim, groups=2, num_vars=320, vq_dim=vq_dim)
         self.post_extract_proj = nn.Linear(self.cnn_out_dim, embed_dim) if self.cnn_out_dim != embed_dim else None
-        self.masker = VectorizedFeatureMasking(embed_dim=embed_dim, mask_prob=0.4, mask_length=4)
+        self.masker = RandomCosineFeatureMasking(embed_dim=embed_dim, mask_length=4, max_prob = 0.8)
         self.conv_pos = ConvPositionalEncoding(embed_dim=embed_dim, kernel_size=128, groups=16)
         self.encoder = transformer_encoder
 
@@ -232,7 +320,7 @@ class ECGTransformerModel(nn.Module):
             "q_targets": q_targets.transpose(1, 2),
             "mask_indices": mask_indices,
             "padding_mask": new_padding_mask,         
-            "perplexity": q_result["perplexity"]
+            "commitment_loss": q_result["commitment_loss"] # SỬA DÒNG NÀY (thay vì perplexity)
         }
 
 class ECGAFClassifier(nn.Module):
@@ -279,39 +367,7 @@ class ECGAFClassifier(nn.Module):
         logits = self.classifier(global_reps)
         return logits
     
-class InfoNCEContrastiveLoss(nn.Module):
-    def __init__(self, temperature=0.1, diversity_weight=0.1, num_vars=320):
-        super().__init__()
-        self.temperature = temperature
-        self.diversity_weight = diversity_weight
-        self.num_vars = num_vars # Số lượng mã từ điển (để tính trần perplexity)
 
-    def forward(self, local_reps, q_targets, mask_indices, perplexity):
-        # ==========================================
-        # 1. LOCAL CONTRASTIVE LOSS (Bắt chước Q)
-        # ==========================================
-        c = local_reps[mask_indices]  
-        q = q_targets[mask_indices]   
-
-        if c.size(0) == 0:
-            local_loss = torch.tensor(0.0, device=c.device, requires_grad=True)
-        else:
-            c = F.normalize(c, p=2, dim=-1)
-            q = F.normalize(q, p=2, dim=-1)
-            logits_local = torch.matmul(c, q.transpose(0, 1)) / self.temperature
-            labels_local = torch.arange(c.size(0), device=c.device)
-            local_loss = F.cross_entropy(logits_local, labels_local)
-
-
-        diversity_penalty = (self.num_vars - perplexity) / self.num_vars
-        print("local_loss: ", local_loss)
-        print("diversity_penalty: ", diversity_penalty)
-
-       
-        total_loss = local_loss  + (self.diversity_weight * diversity_penalty)
-        
-        return total_loss, local_loss
-    
 
 if __name__ == "__main__":
     batch = 1

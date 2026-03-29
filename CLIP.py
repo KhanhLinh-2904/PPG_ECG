@@ -41,7 +41,7 @@ class CrossAttentionFusion(nn.Module):
 
 
 class DualDomainEncoder(nn.Module):
-    def __init__(self, resnet_layers=[3, 4, 6, 3], fft_dim=256):
+    def __init__(self, resnet_layers=[3, 4, 6, 3], fft_dim=256, use_projector=False, fused_dim=2048):
         super(DualDomainEncoder, self).__init__()
         self.time_branch = ResNet50_1D(layers=resnet_layers)
         self.freq_branch = FFT_MLP(input_length=2400, embed_dim=fft_dim)
@@ -49,19 +49,35 @@ class DualDomainEncoder(nn.Module):
         # Cross-Attention Fusion
         self.fusion_module = CrossAttentionFusion(time_channels=2048, freq_channels=fft_dim)
         self.avgpool = nn.AdaptiveAvgPool1d(1)
-
+        self.use_projector = use_projector
+        if self.use_projector:
+            self.projector = PPGProjector(channels=fused_dim, hidden_dim=512)
     def forward(self, x):
         f4, features_list = self.time_branch(x) 
         freq_feat = self.freq_branch(x) 
         
         # Cross-Attention 
         fused_3d = self.fusion_module(f4, freq_feat) 
-        print("shape of fused_3d: ", fused_3d.shape)
         fused_1d = self.avgpool(fused_3d).squeeze(-1) 
-        print("shape of fused_1d: ", fused_1d.shape)
+        if self.use_projector:
+            fused_3d = self.projector(fused_3d)
         return fused_1d, fused_3d, features_list
     
 
+class PPGProjector(nn.Module):
+    def __init__(self, channels=2048, hidden_dim=512):
+        super(PPGProjector, self).__init__()
+        self.net = nn.Sequential(
+        nn.Conv1d(channels, hidden_dim, kernel_size=1),
+        nn.BatchNorm1d(hidden_dim),
+        nn.GELU(),
+        nn.Conv1d(hidden_dim, hidden_dim, kernel_size=3, padding=1),
+        nn.BatchNorm1d(hidden_dim),
+        nn.GELU(),
+        nn.Conv1d(hidden_dim, channels, kernel_size=1),
+        nn.BatchNorm1d(channels)) 
+    def forward(self, x):
+        return x + self.net(x) 
 class ECGEssembleCLIP(nn.Module):
     def __init__(self, embed_dim=128, fft_dim=256):
         super(ECGEssembleCLIP, self).__init__()
@@ -199,29 +215,46 @@ class ECGDecoder_Transformer(nn.Module):
         return ecg_out
 
 class FFT_MLP(nn.Module):
-    def __init__(self, input_length=2400, embed_dim=256):
-        super(FFT_MLP, self).__init__()
-        self.fft_len = input_length // 2 + 1 
+    def __init__(self, input_length=2400, embed_dim=256, order=4):
+        super().__init__()
+        self.fft_len = input_length // 2 + 1
+        self.embed_dim = embed_dim
+        self.order = order # Bậc của bộ lọc (độ dốc khi cắt)
         
-        self.mlp = nn.Sequential(
-            nn.Linear(self.fft_len, 512),
-            nn.LayerNorm(512),
-            nn.PReLU(),
-            nn.Linear(512, embed_dim)
-        )
+        # Tạo trục tần số chuẩn hóa từ 0.0 đến 1.0
+        freqs = torch.linspace(0, 1, self.fft_len)
+        self.register_buffer('freqs', freqs)
+        
+        # Khởi tạo tần số cắt fc (ví dụ: cắt bỏ 10% tần số thấp nhất)
+        self.fc = nn.Parameter(torch.tensor([0.1])) 
 
     def forward(self, x):
         x_squeeze = x.squeeze(1) 
         fft_x = torch.fft.rfft(x_squeeze)
-        mag_x = torch.abs(fft_x) 
+        mag_x = torch.abs(fft_x)
         
         current_len = mag_x.shape[-1]
         if current_len < self.fft_len:
             pad_size = self.fft_len - current_len
             mag_x = F.pad(mag_x, (0, pad_size), mode='constant', value=0.0)
 
-        freq_feat = self.mlp(mag_x) 
+        # 1. Tính toán đường cong bộ lọc HIGH-PASS Butterworth
+        # Công thức: H(f) = 1 / (1 + (fc / f)^(2n))
+        fc_safe = torch.clamp(self.fc, min=1e-3) 
+        freqs_safe = torch.clamp(self.freqs, min=1e-5) # Tránh chia cho 0 ở mốc tần số 0 Hz
+        
+        H = 1.0 / (1.0 + (fc_safe / freqs_safe) ** (2 * self.order))
+        
+        # 2. Áp dụng bộ lọc (Nhân phổ biên độ với đường cong H)
+        filtered_mag = mag_x * H 
+        
+        # 3. Ép về kích thước embed_dim: LẤY CÁC DẢI TẦN SỐ CAO NHẤT
+        # Thay vì [:self.embed_dim], ta lấy từ dưới lên [-self.embed_dim:]
+        freq_feat = filtered_mag[:, -self.embed_dim:]
+        
         return freq_feat
+    
+
     
 
 if __name__ == "__main__":
