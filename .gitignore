@@ -19,3 +19,13 @@ __pycache__/
 *.hdf5
 *.json
 *.mat
+AF_Detection/checkpoints/
+AF_Detection/checkpoints_3/
+AF_Detection/checkpoints_segment/
+AF_Detection/checkpoints2/
+AF_Detection/checkpoints/*.pkl
+AF_Detection/checkpoints_3/*.pkl
+AF_Detection/checkpoints_segment/*.pkl
+AF_Detection/checkpoints2/*.pkl
+AF_Detection/checkpoints/*.npz
+AF_Detection/checkpoints/*.pth
