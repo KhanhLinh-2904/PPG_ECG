@@ -15,7 +15,7 @@ BATCH_SIZE = 64
 INPUT_LENGTH = 2400
 OUTPUT_EMBED_DIM = 128
 TEST_DATA_PATH = 'processed_data/mimic3_v1_2400_test.npz'
-CLIP_MODEL_PATH = "multitask_best_model.pth" 
+CLIP_MODEL_PATH = "multitask_best_model_G_1.pth" 
 
 
 def set_seed(seed):
@@ -236,7 +236,7 @@ def save_ecg_reconstruction_deepbeat(output_path="AF_Detection/ecg_deepbeat_reco
     print(f"Saved DeepBeat reconstructions to {output_path}")
 
 if __name__ == "__main__":
-    # run_visualization()
-    run_loss()
+    run_visualization()
+    # run_loss()
     # save_ecg_reconstruction("AF_Detection/total_ecg_reconstructions.npz")
     # save_ecg_reconstruction_deepbeat("AF_Detection/deepbeat_ecg_reconstructions.npz")

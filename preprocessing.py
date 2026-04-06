@@ -17,8 +17,8 @@ FS = 125
 WINDOW_SECONDS = 10
 STEP_SIZE = 10 
 WINDOW_SAMPLES = int(FS * WINDOW_SECONDS)
-SLICE_LENGTH = 2400
-OVERLAP = 2400
+SLICE_LENGTH = 625
+OVERLAP = 625
 THRESHOLD_SIMILARITY = 0.9
 
 def set_seed(seed_value: int):
@@ -606,7 +606,7 @@ if __name__ == "__main__":
     print(f"Total number of Non-AF segments: {len(non_af_data_ppg)}")
     print(f"Total number of AF segments: {len(af_data_ppg)}")
     print(f"Total data after merging: {len(total_data['ppgs'])}")
-    # save_data(total_data, "total_z")
+    save_data(total_data, "total_z_5s")
     # split_segments_and_save(total_data, save_prefix="normal_remove24", ratios=(0.8, 0.2))
     # split_segments_and_save_by_record(total_data, save_prefix="record", ratios=(0.8, 0.2))
     # split_segments_and_save(total_data, save_prefix="total_z", ratios=(0.8, 0.2))

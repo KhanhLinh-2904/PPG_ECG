@@ -15,7 +15,7 @@ BATCH_SIZE = 64
 INPUT_LENGTH = 2400
 OUTPUT_EMBED_DIM = 128
 TEST_DATA_PATH = 'processed_data/mimic3_v1_2400_test.npz'
-CLIP_MODEL_PATH = "multitask_best_model.pth" 
+CLIP_MODEL_PATH = "multitask_best_model_G.pth" 
 SAMPLING_RATE = 125
 NUM_SAMPLES_TO_VISUALIZE = 2000 
 LAYERS_TO_VISUALIZE = ['layer1', 'layer2', 'layer3', 'layer4']
@@ -110,8 +110,8 @@ def visualize_feature_space():
                 sum_ppg_fft += batch_ppg_fft
 
             # Extracting fused_3d
-            ecg_fused_1d, ecg_fused_3d, ecg_features_list = model.encode_ecg(ecg_input)
-            ppg_fused_1d, ppg_fused_3d, ppg_features_list = model.encode_ppg(ppg_input)
+            ecg_fused_3d = model.encode_ecg(ecg_input)
+            ppg_fused_3d = model.encode_ppg(ppg_input)
 
             ecg_fre_feat = model.encode_ecg.freq_branch(ecg_input)
             ppg_fre_feat = model.encode_ppg.freq_branch(ppg_input)

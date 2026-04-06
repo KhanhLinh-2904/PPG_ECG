@@ -5,8 +5,15 @@ import torch.nn.functional as F
 from torch.utils.data import TensorDataset, DataLoader
 import numpy as np
 import random
-from ecg_transform import ECGTransformerModel, ECGAFClassifier, InfoNCEContrastiveLoss
-
+from ecg_transform import ECGTransformerModel, VQContrastiveLoss, ECGClusterAndClassifier, ECGClusterClassifier
+import os
+import torch
+import numpy as np
+import pickle
+from sklearn.preprocessing import normalize
+from coral_utils import get_coral_stats
+from scipy.linalg import fractional_matrix_power
+from sklearn.neighbors import KNeighborsClassifier
 def set_seed(seed=42):
     random.seed(seed)
     np.random.seed(seed)
@@ -16,30 +23,26 @@ def set_seed(seed=42):
 
 if __name__ == "__main__":
     # ==========================================
-    # ⚙️ CẤU HÌNH CHẠY (BẬT/TẮT CÁC GIAI ĐOẠN)
-    # ==========================================
-    DO_PRETRAIN = False  
+    DO_PRETRAIN = False 
     DO_FINETUNE = True   
     # ==========================================
 
     set_seed(42)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"🚀 Chạy trên thiết bị: {device}")
+    print(f"running on: {device}")
 
-    # Tạo thư mục lưu trọng số
     CHECKPOINT_DIR = "AF_Detection/checkpoints"
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
     pretrained_path = os.path.join(CHECKPOINT_DIR, "pretrained_backbone.pth")
-    print(f"📁 Thư mục lưu trọng số: {CHECKPOINT_DIR}")
+    print(f"folder saved: {CHECKPOINT_DIR}")
 
-    # --- CHUẨN BỊ DỮ LIỆU TRAIN ---
-    print("⏳ Đang tải dữ liệu Train...")
+    print("⏳ loading Train set...")
     try:
         train_data = np.load('processed_data/MIT_BIH_train_segments.npz')
         X_train = torch.tensor(train_data["ecgs"], dtype=torch.float32)
         y_train = torch.tensor(train_data["labels"], dtype=torch.long)
     except FileNotFoundError:
-        print("⚠️ Không tìm thấy file dữ liệu Train, sử dụng dữ liệu giả lập (Dummy Data).")
+        print("can not find Train set, using (Dummy Data).")
         X_train = torch.randn(100, 1, 2400)
         y_train = torch.randint(0, 2, (100,))
 
@@ -49,21 +52,19 @@ if __name__ == "__main__":
     train_dataset = TensorDataset(X_train, y_train)
     train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
 
-    # --- CHUẨN BỊ 3 TẬP DỮ LIỆU TEST ---
-    print("⏳ Đang tải các tập dữ liệu Test...")
-    test_loaders = {} # Dùng dictionary để lưu tên dataset và loader tương ứng
+    print("⏳ loading Test sets...")
+    test_loaders = {}
     
     test_files = {
         "MIT-BIH": 'processed_data/MIT_BIH_test_segments.npz',
-        "Total-Recon": 'AF_Detection/total_ecg_reconstructions.npz',
-        "DeepBeat-Recon": 'AF_Detection/deepbeat_ecg_reconstructions.npz'
+        "Total z (MIMIC AF)": 'datasets/total_z.npz',
+        "(MIMIC AF) z-Recon": 'AF_Detection/total_ecg_reconstructions.npz',
+        "Deepbeat Recon": 'AF_Detection/deepbeat_ecg_reconstructions.npz'
     }
 
     for name, path in test_files.items():
         try:
             t_data = np.load(path)
-            # Lưu ý: Cần kiểm tra tên khóa (key) trong các file .npz mới có giống với MIT-BIH không.
-            # Giả định chúng đều dùng khóa 'ecgs' và 'labels'.
             X_t = torch.tensor(t_data["ecgs"], dtype=torch.float32)
             y_t = torch.tensor(t_data["labels"], dtype=torch.long)
             
@@ -72,17 +73,17 @@ if __name__ == "__main__":
                 
             t_dataset = TensorDataset(X_t, y_t)
             test_loaders[name] = DataLoader(t_dataset, batch_size=32, shuffle=False)
-            print(f"  ✅ Đã tải thành công tập Test: {name} (Kích thước: {X_t.shape[0]} mẫu)")
+            print(f"  loading Test set: {name} (shape: {X_t.shape[0]} samples)")
         except FileNotFoundError:
-            print(f"  ⚠️ Lỗi: Không tìm thấy file Test '{path}'. Bỏ qua tập này.")
+            print(f"  error: not found file Test '{path}'. skip.")
         except KeyError as e:
-            print(f"  ⚠️ Lỗi: Không tìm thấy khóa {e} trong file '{path}'. Vui lòng kiểm tra lại cấu trúc file .npz.")
+            print(f" error: can not find {e} in file '{path}'")
 
     if not test_loaders:
-        print("⚠️ Không tải được tập Test nào!")
+        print("can not load any Test set, using (Dummy Data).")
 
     # --- (BACKBONE) ---
-    print("🧠 Khởi tạo mô hình Backbone...")
+    print("initializing Backbone...")
     EMBED_DIM = 256
     transformer_encoder = nn.TransformerEncoder(
         nn.TransformerEncoderLayer(d_model=EMBED_DIM, nhead=8, dim_feedforward=1024, dropout=0.1, batch_first=True), 
@@ -100,33 +101,35 @@ if __name__ == "__main__":
 
 
     # ==========================================================================
-    # GIAI ĐOẠN 1: PRE-TRAINING
+    # stage 1: PRE-TRAINING
     # ==========================================================================
     if DO_PRETRAIN:
         print("\n" + "="*50)
-        print("🌟 GIAI ĐOẠN 1: PRE-TRAINING BACKBONE")
+        print("stage 1: PRE-TRAINING BACKBONE")
         print("="*50)
         
         pretrain_epochs = 15
-        pretrain_criterion = InfoNCEContrastiveLoss(temperature=0.1).to(device)
+        pretrain_criterion = VQContrastiveLoss().to(device)
         pretrain_optimizer = torch.optim.AdamW(backbone.parameters(), lr=5e-4)
 
         for epoch in range(pretrain_epochs):
             backbone.train()
             running_loss = 0.0
             
-            backbone.quantizer.set_num_updates(epoch)
             
-            for batch_idx, (inputs, _) in enumerate(train_loader):
+            for batch_idx, (inputs, labels) in enumerate(train_loader):
                 inputs = inputs.to(device)
-                
+                labels = labels.to(device)
                 pretrain_optimizer.zero_grad()
                 outputs = backbone(inputs)
+              
+                
                 loss, c_loss = pretrain_criterion(
                     local_reps = outputs["local_reps"], 
                     q_targets = outputs["q_targets"], 
                     mask_indices = outputs["mask_indices"], 
-                    perplexity = outputs["perplexity"]
+                    vq_loss = outputs["vq_loss"],
+                    vq_perplexity=outputs["perplexity"]
                 )
                 
                 if loss.requires_grad:
@@ -138,93 +141,92 @@ if __name__ == "__main__":
             print(f"Pre-train Epoch [{epoch+1}/{pretrain_epochs}] | Total Loss: {running_loss/len(train_loader):.4f}")
 
         torch.save(backbone.state_dict(), pretrained_path)
-        print(f"✅ Lưu Backbone thành công tại: {pretrained_path}")
+        print(f"save Backbone successfully: {pretrained_path}")
     else:
         print("\n" + "="*50)
-        print("⏩ BỎ QUA PRE-TRAINING. TẢI TRỌNG SỐ TỪ FILE...")
+        print("skip PRE-TRAINING. loading FILE...")
         print("="*50)
         if os.path.exists(pretrained_path):
             backbone.load_state_dict(torch.load(pretrained_path, map_location=device))
-            print(f"✅ Đã tải trọng số Backbone từ: {pretrained_path}")
+            print(f"save weights Backbone from: {pretrained_path}")
         else:
-            print(f"⚠️ CẢNH BÁO: Không tìm thấy '{pretrained_path}'. Backbone sẽ dùng trọng số khởi tạo ngẫu nhiên!")
+            print(f"error: not found '{pretrained_path}'. Backbone will use random initialization!")
 
 
+    def get_coral_stats(features):
+        mu = np.mean(features, axis=0)
+        cov = np.cov(features, rowvar=False) + np.eye(features.shape[1]) * 1e-5
+        return mu, cov
     # ==========================================================================
-    # GIAI ĐOẠN 2: FINE-TUNING
+    # stage 2: FEATURE EXTRACTION, CORAL COMPUTATION & KNN TRAINING
     # ==========================================================================
     if DO_FINETUNE:
         print("\n" + "="*50)
-        print("🎯 GIAI ĐOẠN 2: FINE-TUNING CHO PHÂN LOẠI AF")
+        print("🎯 stage 2: CORAL ALIGNMENT & k-NN CLASSIFICATION")
         print("="*50)
 
-        model = ECGAFClassifier(
-            backbone=backbone,
+        # 1. initialize Backbone and Load Pretrained Weights
+        model_transformer = ECGTransformerModel(
+            in_channels=X_train.shape[1],
             embed_dim=EMBED_DIM,
-            hidden_dim=int(EMBED_DIM/2),
-            num_classes=2,
-            dropout_prob=0.3,
-            freeze_backbone=False
+            conv_layers=[(256, 10, 5), (256, 3, 2), (256, 3, 2)], 
+            vq_dim=EMBED_DIM,
+            feature_grad_mult = 1.0,
+            transformer_encoder=transformer_encoder
         ).to(device)
-
-        trainable_params = filter(lambda p: p.requires_grad, model.parameters())
         
-        finetune_epochs = 20
-        finetune_criterion = nn.CrossEntropyLoss()
-        finetune_optimizer = torch.optim.AdamW(trainable_params, lr=1e-4)
-        for epoch in range(finetune_epochs):
-            model.train()
-            # model.backbone.eval() # BỎ DÒNG NÀY VÌ ĐÃ UNFREEZE BACKBONE
+        # Load wieghts pretrain from stage 1
+        model_transformer.load_state_dict(torch.load(pretrained_path, map_location=device))
+        model_transformer.eval() 
+
+        # ---------------------------------------------------------
+        # A: ectract features from TRAIN
+        # ---------------------------------------------------------
+        print("extracting features from Train...")
+        all_train_features = []
+        all_train_labels = []
+
+        with torch.no_grad():
+            for inputs, labels in train_loader:
+                inputs = inputs.to(device)
+                
+                outputs = model_transformer(inputs) 
+                local_reps = outputs['local_reps'] # Shape: [Batch, Seq_len, Embed_dim]
+                
+                ecg_features = local_reps.mean(dim=1) 
+                
+                all_train_features.append(ecg_features.cpu().numpy())
+                all_train_labels.append(labels.cpu().numpy())
+
+        all_train_features = np.concatenate(all_train_features, axis=0)
+        all_train_labels = np.concatenate(all_train_labels, axis=0)
+
+        # ---------------------------------------------------------
+        # B: calculate CORAL STATS & train KNN
+        # ---------------------------------------------------------
+        source_mu, source_cov = get_coral_stats(all_train_features)
+        print(f"  - Mean Vector Shape: {source_mu}")
+        print(f"  - Covariance Matrix Shape: {source_cov}")
+
+        # k-NN K=5 and metric='cosine' 
+        classifier = KNeighborsClassifier(n_neighbors=9, metric='cosine', weights='distance')
+        classifier.fit(all_train_features, all_train_labels)
+
+        # ---------------------------------------------------------
+        # C: save CLASSIFIER and CORAL STATS
+        # ---------------------------------------------------------
+        checkpoint_data = {
+            'classifier': classifier,
+            'source_mu': source_mu,
+            'source_cov': source_cov
+        }
+
+        model_save_path = os.path.join(CHECKPOINT_DIR, "coral_knn_checkpoint_13.pkl")
+        with open(model_save_path, 'wb') as f:
+            pickle.dump(checkpoint_data, f)
             
-            running_loss = 0.0
-            correct_preds = 0
-            total_samples = 0
-            
-            for batch_idx, (inputs, labels) in enumerate(train_loader):
-                inputs, labels = inputs.to(device), labels.to(device)
-                
-                finetune_optimizer.zero_grad()
-                logits = model(inputs)
-                loss = finetune_criterion(logits, labels)
-                
-                loss.backward()
-                finetune_optimizer.step()
-                
-                running_loss += loss.item() * inputs.size(0)
-                _, predictions = torch.max(logits, dim=1)
-                correct_preds += torch.sum(predictions == labels).item()
-                total_samples += labels.size(0)
-                
-            epoch_loss = running_loss / total_samples
-            epoch_acc = (correct_preds / total_samples) * 100.0
-
-            print(f"\nEpoch [{epoch+1}/{finetune_epochs}] | Train Loss: {epoch_loss:.4f} - Train Acc: {epoch_acc:.2f}%")
-
-            # --- ĐÁNH GIÁ TRÊN 3 TẬP TEST ---
-            if test_loaders:
-                model.eval() 
-                with torch.no_grad():
-                    for test_name, loader in test_loaders.items():
-                        test_loss = 0.0
-                        test_correct = 0
-                        test_total = 0
-                        
-                        for test_inputs, test_labels in loader:
-                            test_inputs, test_labels = test_inputs.to(device), test_labels.to(device)
-                            
-                            test_logits = model(test_inputs)
-                            t_loss = finetune_criterion(test_logits, test_labels)
-                            
-                            test_loss += t_loss.item() * test_inputs.size(0)
-                            _, test_preds = torch.max(test_logits, dim=1)
-                            test_correct += torch.sum(test_preds == test_labels).item()
-                            test_total += test_labels.size(0)
-                            
-                        epoch_test_loss = test_loss / test_total
-                        epoch_test_acc = (test_correct / test_total) * 100.0
-                        
-                        print(f"  👉 Test [{test_name}]: Loss = {epoch_test_loss:.4f} | Acc = {epoch_test_acc:.2f}%")
-
-        final_path = os.path.join(CHECKPOINT_DIR, "final_af_classifier_unfreezed.pth")
-        torch.save(model.state_dict(), final_path)
-        print(f"\n🎉 KẾT THÚC CHU TRÌNH! Lưu mô hình tại: {final_path}")
+        print("\n✅ completed stage 2!")
+        print(f"  - Model & CORAL Stats saved at: {model_save_path}")
+        print(f"  - Vector Mean Shape: {source_mu.shape}")
+        print(f"  - Covariance Matrix Shape: {source_cov.shape}")
+        

@@ -6,7 +6,7 @@ from preprocessing import SignalProcessor
 import random
 from utils import calculate_bsqi
 TARGET_FS = 250
-SLICE_LENGTH = 2400
+SLICE_LENGTH = 5000
 signal_preprocess_ecg = SignalProcessor(fs=TARGET_FS)
 seed = 42
 def set_seed(seed_value=42):
@@ -307,17 +307,17 @@ def split_train_test_per_record(segments, labels, names, seed=42):
     print(f"Total initial segments          : {len(segments)}")
     print(f"Train set                       : {len(train_ecgs)} segments ({len(train_ecgs)/len(segments):.1%})")
     print(f"Test set                        : {len(test_ecgs)} segments ({len(test_ecgs)/len(segments):.1%})")
-    np.savez_compressed(os.path.join(save_path, "MIT_BIH_train_segments.npz"), 
+    np.savez_compressed(os.path.join(save_path, "MIT_BIH_train_40s_segments.npz"), 
                         ecgs=train_ecgs, labels=train_labels, records=train_names)
 
-    np.savez_compressed(os.path.join(save_path, "MIT_BIH_test_segments.npz"), 
+    np.savez_compressed(os.path.join(save_path, "MIT_BIH_test_40s_segments.npz"), 
                         ecgs=test_ecgs, labels=test_labels, records=test_names)
         
 if __name__ == "__main__":
     segments, labels, names = loadData()
-    # if segments is not None:
-        # split_train_test_per_record(segments, labels, names)
     if segments is not None:
-        # visualize_af_vs_normal_separate(segments, labels, names, fs=TARGET_FS)
-        save_train_test_split_record(segments, labels, names, seed=42)
+        split_train_test_per_record(segments, labels, names)
+    # if segments is not None:
+    #     # visualize_af_vs_normal_separate(segments, labels, names, fs=TARGET_FS)
+    #     save_train_test_split_record(segments, labels, names, seed=42)
 

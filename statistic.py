@@ -2,7 +2,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # train_data_path = "processed_data/mimic3_v1_train.npz"
-test_data_path = "processed_data/MIT_BIH_test_record.npz"
+
+test_data_path = "processed_data/MIT_BIH_train_segments.npz"
 # data_train = np.load(train_data_path, allow_pickle=True)
 data_test = np.load(test_data_path, allow_pickle=True)
 # ppgs = data_test["ppgs"]

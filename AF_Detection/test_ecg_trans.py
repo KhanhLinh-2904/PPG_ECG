@@ -3,43 +3,83 @@ import torch
 import torch.nn as nn
 from torch.utils.data import TensorDataset, DataLoader
 import numpy as np
+import pickle
+from scipy.linalg import fractional_matrix_power
+import matplotlib.pyplot as plt
+from sklearn.metrics import accuracy_score, precision_score, recall_score, confusion_matrix
 
-# Libraries for calculating advanced evaluation metrics
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
-from ecg_transform_copy import ECGTransformerModel, ECGAFClassifier
+# Import ECGTransformerModel
+from ecg_transform import ECGTransformerModel
+
+# ==============================================================================
+# HELPER FUNCTIONS FOR CORAL ALIGNMENT
+# ==============================================================================
+def get_coral_stats(features):
+    """Calculates Mean and Covariance of the Test set (Used for alignment)"""
+    mu = np.mean(features, axis=0)
+    cov = np.cov(features, rowvar=False) + np.eye(features.shape[1]) * 1e-5
+    return mu, cov
+
+def apply_coral(source_mu, source_cov, target_features):
+    """
+    Aligns the Test data (Target) distribution to match the Train (Source) distribution.
+    - source_mu, source_cov: Extracted from pickle file (MIT-BIH training stats)
+    - target_features: Raw features extracted from the Backbone of the current Test set
+    """
+    target_mu, target_cov = get_coral_stats(target_features)
+    
+    # Calculate the spatial transformation matrices
+    cov_s_half = fractional_matrix_power(source_cov, 0.5)
+    cov_t_inv_half = fractional_matrix_power(target_cov, -0.5)
+    
+    # Apply rotation, scaling, and translation
+    target_aligned = np.dot(target_features - target_mu, cov_t_inv_half)
+    target_aligned = np.dot(target_aligned, cov_s_half) + source_mu
+    
+    return target_aligned.real
+
+# ==============================================================================
+# PATH CONFIGURATION
+# ==============================================================================
+pretrained_path = 'AF_Detection/checkpoints/pretrained_backbone.pth'
+# Load file containing CORAL stats and the k-NN model
+coral_model_path = 'AF_Detection/checkpoints/coral_knn_checkpoint.pkl'
+
+test_files = {
+    "MIT-BIH": 'processed_data/MIT_BIH_test_segments.npz',
+    "Total z (MIMIC AF)": 'datasets/total_z.npz',
+    "Recon ECG MIMIC AF": 'AF_Detection/total_ecg_reconstructions.npz',
+    "Deepbeat Recon": 'AF_Detection/deepbeat_ecg_reconstructions.npz'
+}
 
 if __name__ == "__main__":
-    # 1. Device configuration
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"🚀 Starting testing process on device: {device}")
+    print(f"🚀 Starting Evaluation on device: {device}")
 
     # ==============================================================================
-    # 2. LOAD TEST DATA
+    # 1. LOAD k-NN CLASSIFIER & CORAL STATS FROM PHASE 2
     # ==============================================================================
-    print("⏳ Loading Test Data...")
+    print("📚 Loading k-NN Model and CORAL parameters...")
     try:
-        # Replace with your actual test data file
-        test_data = np.load('ơ')
-        X_test = torch.tensor(test_data["ecgs"], dtype=torch.float32)
-        y_test = torch.tensor(test_data["labels"], dtype=torch.long)
+        with open(coral_model_path, 'rb') as f:
+            checkpoint_data = pickle.load(f)
+            
+        classifier = checkpoint_data['classifier']
+        source_mu = checkpoint_data['source_mu']
+        source_cov = checkpoint_data['source_cov']
+        
+        print("✅ Successfully loaded Classifier and Source Feature Map (MIT-BIH).")
     except FileNotFoundError:
-        print("⚠️ Data file not found. Using Dummy Data for testing purposes.")
-        X_test = torch.randn(50, 1, 2400) # 50 test samples
-        y_test = torch.randint(0, 2, (50,))
-
-    # Ensure shape format is [Batch, Channels, Length]
-    if X_test.dim() == 2:
-        X_test = X_test.unsqueeze(1)
-
-    print(f"Test Set Size: {X_test.shape}")
-    
-    test_dataset = TensorDataset(X_test, y_test)
-    test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False) # No need to shuffle during testing
+        print(f"❌ Error: File not found at {coral_model_path}. Please run the Phase 2 training script.")
+        exit()
+    except KeyError as e:
+        print(f"❌ Error: Pickle file is missing key {e}. This file might be an outdated version.")
+        exit()
 
     # ==============================================================================
-    # 3. RE-INITIALIZE MODEL ARCHITECTURE (Must exactly match Training)
+    # 2. INITIALIZE BACKBONE (MUST MATCH TRAINING ARCHITECTURE)
     # ==============================================================================
-    print("🧠 Initializing model architecture...")
+    print("🧠 Initializing Transformer Backbone architecture...")
     EMBED_DIM = 256
     
     transformer_encoder = nn.TransformerEncoder(
@@ -48,104 +88,103 @@ if __name__ == "__main__":
     )
     
     backbone = ECGTransformerModel(
-        in_channels=X_test.shape[1],
+        in_channels=1,
         embed_dim=EMBED_DIM,
         conv_layers=[(256, 10, 5), (256, 3, 2), (256, 3, 2)], 
         vq_dim=EMBED_DIM,
         transformer_encoder=transformer_encoder
-    )
-
-    model = ECGAFClassifier(
-        backbone=backbone,
-        embed_dim=EMBED_DIM,
-        hidden_dim=int(EMBED_DIM/2), # Added based on your previous architectural updates
-        num_classes=2,
-        dropout_prob=0.0, # Automatically disabled during eval, setting to 0 to be safe
-        freeze_backbone=True 
     ).to(device)
 
-    # ==============================================================================
-    # 4. LOAD TRAINED WEIGHTS (CHECKPOINT)
-    # ==============================================================================
-    MODEL_PATH = "AF_Detection/checkpoints/final_af_classifier.pth" # Updated to load the best model
-    
-    if os.path.exists(MODEL_PATH):
-        model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
-        print(f"✅ Successfully loaded weights from: {MODEL_PATH}")
-    else:
-        print(f"❌ ERROR: Weight file not found at {MODEL_PATH}. Please check the path!")
+    try:
+        backbone.load_state_dict(torch.load(pretrained_path, map_location=device))
+        print("✅ Backbone weights loaded successfully.")
+    except FileNotFoundError:
+        print(f"❌ Error: Backbone weights not found at {pretrained_path}")
         exit()
 
-    # ==============================================================================
-    # 5. INFERENCE LOOP
-    # ==============================================================================
-    print("\n" + "="*50)
-    print("🔍 PERFORMING PREDICTIONS...")
-    print("="*50)
-    
-    # Switch model to Evaluation mode (CRITICAL)
-    # Disables Dropout, turns off Batch/Layer Norm learning
-    model.eval() 
-    
-    all_preds = []
-    all_labels = []
-
-    # Enable no_grad context to disable gradient calculation, boosting speed and saving RAM
-    with torch.no_grad():
-        for inputs, labels in test_loader:
-            inputs, labels = inputs.to(device), labels.to(device)
-            
-            # Forward pass
-            logits = model(inputs)
-            
-            # Get the class with the highest probability (0 or 1)
-            _, predictions = torch.max(logits, dim=1)
-            
-            # Move results from GPU back to CPU for sklearn calculations
-            all_preds.extend(predictions.cpu().numpy())
-            all_labels.extend(labels.cpu().numpy())
+    backbone.eval() 
 
     # ==============================================================================
-    # 6. CALCULATE AND PRINT EVALUATION METRICS
+    # 3. RUN PREDICTIONS ON EACH DATASET
     # ==============================================================================
-    
-    # Calculate basic metrics
-    acc = accuracy_score(all_labels, all_preds)
-    prec = precision_score(all_labels, all_preds, zero_division=0)
-    rec = recall_score(all_labels, all_preds, zero_division=0)
-    
-    # Generate Confusion Matrix to extract TP, TN, FP, FN
-    cm = confusion_matrix(all_labels, all_preds)
-    
-    # Unpack Confusion Matrix (Assuming binary classification: 0=Negative, 1=Positive)
-    # cm format: [[TN, FP],
-    #             [FN, TP]]
-    tn, fp, fn, tp = cm.ravel()
-    
-    # Calculate Specificity (True Negative Rate)
-    # Formula: TN / (TN + FP)
-    specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
-    
-    total_samples = len(all_labels)
+    print("\n" + "="*60)
+    print("🔍 PERFORMING EVALUATION (CORAL ALIGNMENT + k-NN)...")
+    print("="*60)
 
-    print("\n📊 TEST REPORT:")
-    print("-" * 40)
-    print(f"  • Accuracy        : {acc * 100:.2f}%")
-    print(f"  • Precision       : {prec * 100:.2f}%")
-    print(f"  • Recall (Sensitivity): {rec * 100:.2f}%")
-    print(f"  • Specificity     : {specificity * 100:.2f}%")
-    print("-" * 40)
-    
-    print("\n🔢 DETAILED COUNTS:")
-    print("-" * 40)
-    print(f"  • True Positives (TP) : {tp}")
-    print(f"  • True Negatives (TN) : {tn}")
-    print(f"  • False Positives (FP): {fp}")
-    print(f"  • False Negatives (FN): {fn}")
-    print(f"  • Total Samples       : {total_samples}")
-    print("-" * 40)
-    
-    print("\n📉 CONFUSION MATRIX:")
-    print("                  Predicted Non-AF (0) | Predicted AF (1)")
-    print(f"Actual Non-AF (0) |        {tn:<17} |      {fp:<12}")
-    print(f"Actual AF (1)     |        {fn:<17} |      {tp:<12}")
+    for test_name, file_path in test_files.items():
+        print(f"\n📂 Dataset: [{test_name}]")
+        
+        try:
+            test_data = np.load(file_path)
+            X_test_raw = test_data["ecgs"]
+            y_test_raw = test_data["labels"]
+            
+            X_test_tensor = torch.tensor(X_test_raw, dtype=torch.float32)
+            y_test_tensor = torch.tensor(y_test_raw, dtype=torch.long)
+        except Exception as e:
+            print(f"    ⚠️ Error loading file {file_path}: {e}. Skipping.")
+            continue
+            
+        if X_test_tensor.dim() == 2:
+            X_test_tensor = X_test_tensor.unsqueeze(1)
+
+        test_loader = DataLoader(TensorDataset(X_test_tensor, y_test_tensor), batch_size=64, shuffle=False)
+
+        all_test_features = []
+        all_true_labels = []
+
+        # 3.1: Extract raw features from Backbone
+        with torch.no_grad():
+            for inputs, labels in test_loader:
+                inputs = inputs.to(device)
+                outputs = backbone(inputs)
+                
+                # Global Average Pooling across the time dimension
+                features = outputs['local_reps'].mean(dim=1).cpu().numpy()
+                all_test_features.append(features)
+                all_true_labels.extend(labels.numpy())
+
+        # Concatenate into (N_samples, 256) matrix
+        all_test_features = np.concatenate(all_test_features, axis=0)
+        all_true_labels = np.array(all_true_labels)
+      
+        # ==============================================================================
+        # 3.2: APPLY CORAL ALIGNMENT TO TRANSFORM COORDINATES
+        # ==============================================================================
+        print(f"    🔄 Aligning feature distribution using CORAL Alignment...")
+        # Force the test set feature cloud (MIMIC/MIT-BIH) to match the training set (MIT-BIH)
+        all_test_features_aligned = apply_coral(source_mu, source_cov, all_test_features)
+
+        # ==============================================================================
+        # 3.3: CLASSIFY USING k-NN ON ALIGNED DATA
+        # ==============================================================================
+        print(f"    🧠 Predicting with k-NN...")
+        all_preds = classifier.predict(all_test_features_aligned)
+
+        # ==============================================================================
+        # 4. CALCULATE AND PRINT RESULTS
+        # ==============================================================================
+        acc = accuracy_score(all_true_labels, all_preds)
+        prec = precision_score(all_true_labels, all_preds, zero_division=0)
+        rec = recall_score(all_true_labels, all_preds, zero_division=0)
+        cm = confusion_matrix(all_true_labels, all_preds)
+        
+        if cm.shape == (2, 2):
+            tn, fp, fn, tp = cm.ravel()
+            spec = tn / (tn + fp) if (tn + fp) > 0 else 0.0
+        else:
+            # Fallback for single-class batches or edge cases
+            tn = cm[0,0] if all_true_labels[0] == 0 else 0
+            tp = cm[0,0] if all_true_labels[0] == 1 else 0
+            fp = fn = 0
+            spec = 1.0 if tn > 0 else 0.0
+
+        print("   " + "-" * 35)
+        print(f"      • Accuracy    : {acc * 100:.2f}%")
+        print(f"      • Precision   : {prec * 100:.2f}%")
+        print(f"      • Recall (Sen): {rec * 100:.2f}%")
+        print(f"      • Specificity : {spec * 100:.2f}%")
+        print("   " + "-" * 35)
+        
+        print(f"    📉 Confusion Matrix: [TN: {tn}, FP: {fp}] / [FN: {fn}, TP: {tp}]")
+        print("="*60)

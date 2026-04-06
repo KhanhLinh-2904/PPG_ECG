@@ -40,44 +40,25 @@ class CrossAttentionFusion(nn.Module):
         return fused_feat.transpose(1, 2)
 
 
+
 class DualDomainEncoder(nn.Module):
-    def __init__(self, resnet_layers=[3, 4, 6, 3], fft_dim=256, use_projector=False, fused_dim=2048):
+    def __init__(self, resnet_layers=[3, 4, 6, 3], fft_dim=256):
         super(DualDomainEncoder, self).__init__()
         self.time_branch = ResNet50_1D(layers=resnet_layers)
         self.freq_branch = FFT_MLP(input_length=2400, embed_dim=fft_dim)
         
         # Cross-Attention Fusion
         self.fusion_module = CrossAttentionFusion(time_channels=2048, freq_channels=fft_dim)
-        self.avgpool = nn.AdaptiveAvgPool1d(1)
-        self.use_projector = use_projector
-        if self.use_projector:
-            self.projector = PPGProjector(channels=fused_dim, hidden_dim=512)
+
     def forward(self, x):
         f4, features_list = self.time_branch(x) 
         freq_feat = self.freq_branch(x) 
         
         # Cross-Attention 
         fused_3d = self.fusion_module(f4, freq_feat) 
-        fused_1d = self.avgpool(fused_3d).squeeze(-1) 
-        if self.use_projector:
-            fused_3d = self.projector(fused_3d)
-        return fused_1d, fused_3d, features_list
+        return fused_3d
     
 
-class PPGProjector(nn.Module):
-    def __init__(self, channels=2048, hidden_dim=512):
-        super(PPGProjector, self).__init__()
-        self.net = nn.Sequential(
-        nn.Conv1d(channels, hidden_dim, kernel_size=1),
-        nn.BatchNorm1d(hidden_dim),
-        nn.GELU(),
-        nn.Conv1d(hidden_dim, hidden_dim, kernel_size=3, padding=1),
-        nn.BatchNorm1d(hidden_dim),
-        nn.GELU(),
-        nn.Conv1d(hidden_dim, channels, kernel_size=1),
-        nn.BatchNorm1d(channels)) 
-    def forward(self, x):
-        return x + self.net(x) 
 class ECGEssembleCLIP(nn.Module):
     def __init__(self, embed_dim=128, fft_dim=256):
         super(ECGEssembleCLIP, self).__init__()
@@ -87,7 +68,7 @@ class ECGEssembleCLIP(nn.Module):
         # Encoders
         self.encode_ecg = DualDomainEncoder(fft_dim=fft_dim)
         self.encode_ppg = DualDomainEncoder(fft_dim=fft_dim)
-
+        self.avgpool = nn.AdaptiveAvgPool1d(1)
         
         # ECG Converter 
         self.decoder = ECGDecoder_Transformer(
@@ -98,31 +79,24 @@ class ECGEssembleCLIP(nn.Module):
             target_length=2400
         )
 
+
     def forward(self, ecg_original, ppg_original):
-        ppg_fused_1d, ppg_fused_3d, ppg_features_list = self.encode_ppg(ppg_original)
-        
+        ppg_fused_3d = self.encode_ppg(ppg_original)
+        z_ppg_1d = self.avgpool(ppg_fused_3d).squeeze(-1) 
         reconstructed_ecg = self.decoder(ppg_fused_3d, features_list=None)
 
         if ecg_original is None:
-            # PPG_embedding = self.project_ppg(ppg_fused_1d)
-            PPG_embedding = ppg_fused_1d
-            ppg_norm = PPG_embedding / PPG_embedding.norm(dim=1, keepdim=True)
+            ppg_norm = z_ppg_1d / z_ppg_1d.norm(dim=1, keepdim=True)
             return reconstructed_ecg
 
         else:
-            ecg_fused_1d, ecg_fused_3d, ecg_features_list = self.encode_ecg(ecg_original)
-            
-            # ECG_embedding = self.project_ecg(ecg_fused_1d)
-            # PPG_embedding = self.project_ppg(ppg_fused_1d)
-            ECG_embedding = ecg_fused_1d
-            PPG_embedding = ppg_fused_1d
+            ecg_fused_3d = self.encode_ecg(ecg_original)
+            z_ecg_1d = self.avgpool(ecg_fused_3d).squeeze(-1) 
 
-            ecg_norm = ECG_embedding / ECG_embedding.norm(dim=1, keepdim=True)
-            ppg_norm = PPG_embedding / PPG_embedding.norm(dim=1, keepdim=True)
+            ecg_norm = z_ecg_1d / z_ecg_1d.norm(dim=1, keepdim=True)
+            ppg_norm = z_ppg_1d / z_ppg_1d.norm(dim=1, keepdim=True)
             
             return ecg_norm, ppg_norm, reconstructed_ecg
-
-
 
 class PositionalEncoding1D(nn.Module):
    
@@ -214,49 +188,55 @@ class ECGDecoder_Transformer(nn.Module):
             
         return ecg_out
 
+
 class FFT_MLP(nn.Module):
-    def __init__(self, input_length=2400, embed_dim=256, order=4):
-        super().__init__()
-        self.fft_len = input_length // 2 + 1
-        self.embed_dim = embed_dim
-        self.order = order # Bậc của bộ lọc (độ dốc khi cắt)
+    def __init__(self, input_length=2400, embed_dim=256):
+        super(FFT_MLP, self).__init__()
+        self.fft_len = input_length // 2 + 1 
         
-        # Tạo trục tần số chuẩn hóa từ 0.0 đến 1.0
-        freqs = torch.linspace(0, 1, self.fft_len)
-        self.register_buffer('freqs', freqs)
-        
-        # Khởi tạo tần số cắt fc (ví dụ: cắt bỏ 10% tần số thấp nhất)
-        self.fc = nn.Parameter(torch.tensor([0.1])) 
+        self.mlp = nn.Sequential(
+            nn.Linear(self.fft_len, 512),
+            nn.LayerNorm(512),
+            nn.PReLU(),
+            nn.Linear(512, embed_dim)
+        )
 
     def forward(self, x):
         x_squeeze = x.squeeze(1) 
         fft_x = torch.fft.rfft(x_squeeze)
-        mag_x = torch.abs(fft_x)
+        mag_x = torch.abs(fft_x) 
         
         current_len = mag_x.shape[-1]
         if current_len < self.fft_len:
             pad_size = self.fft_len - current_len
             mag_x = F.pad(mag_x, (0, pad_size), mode='constant', value=0.0)
 
-        # 1. Tính toán đường cong bộ lọc HIGH-PASS Butterworth
-        # Công thức: H(f) = 1 / (1 + (fc / f)^(2n))
-        fc_safe = torch.clamp(self.fc, min=1e-3) 
-        freqs_safe = torch.clamp(self.freqs, min=1e-5) # Tránh chia cho 0 ở mốc tần số 0 Hz
-        
-        H = 1.0 / (1.0 + (fc_safe / freqs_safe) ** (2 * self.order))
-        
-        # 2. Áp dụng bộ lọc (Nhân phổ biên độ với đường cong H)
-        filtered_mag = mag_x * H 
-        
-        # 3. Ép về kích thước embed_dim: LẤY CÁC DẢI TẦN SỐ CAO NHẤT
-        # Thay vì [:self.embed_dim], ta lấy từ dưới lên [-self.embed_dim:]
-        freq_feat = filtered_mag[:, -self.embed_dim:]
-        
+        freq_feat = self.mlp(mag_x) 
         return freq_feat
-    
 
-    
+class PPG_ECG_PatchGAN_Discriminator(nn.Module):
+    def __init__(self, in_channels=2):
+        super(PPG_ECG_PatchGAN_Discriminator, self).__init__()
 
+        def discriminator_block(in_filters, out_filters, stride, padding=0, use_norm=True):
+            layers = [nn.Conv1d(in_filters, out_filters, kernel_size=5, stride=stride, padding=padding)]
+            if use_norm:
+                layers.append(nn.InstanceNorm1d(out_filters))
+            layers.append(nn.LeakyReLU(0.2, inplace=True))
+            return layers
+
+        self.model = nn.Sequential(
+            *discriminator_block(in_channels, 128, stride=3, padding=0, use_norm=False),
+            *discriminator_block(128, 256, stride=3, padding=0),
+            *discriminator_block(256, 512, stride=3, padding=0),
+            nn.Conv1d(512, 1, kernel_size=5, stride=1, padding=1)
+        )
+
+    def forward(self, ppg_signal, ecg_signal):
+        combined_input = torch.cat([ppg_signal, ecg_signal], dim=1)
+        validity_score = self.model(combined_input)
+        return validity_score
+    
 if __name__ == "__main__":
     BATCH_SIZE = 32
     CHANNELS = 1
