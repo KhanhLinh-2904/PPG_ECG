@@ -16,3 +16,6 @@ __pycache__/
 *.log
 *.csv
 *.pkl
+*.hdf5
+*.json
+*.mat
