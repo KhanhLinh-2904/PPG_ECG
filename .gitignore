@@ -5,6 +5,8 @@
 *.jpg
 *.pt
 *.pth
+*.pkl
+*.json
 saved_models/
 models/
 *.zip

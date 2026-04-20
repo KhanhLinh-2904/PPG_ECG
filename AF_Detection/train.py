@@ -21,7 +21,7 @@ def set_seed(seed=42):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
     
-CHECKPOINT_DIR = "AF_Detection/checkpoints"
+CHECKPOINT_DIR = "/home/linhhima/PPG_ECG/AF_Detection/checkpoints_min_max"
 os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 
 def train_model(train_loader, epochs, model, criterion, optimizer, device):
@@ -100,7 +100,7 @@ def plot_metrics(train_losses, train_accs):
 if __name__ == "__main__":
     set_seed(42)
     # 1. Load training data
-    train_data = np.load('AF_Detection/detect_af_MIT_BIH_train.npz')
+    train_data = np.load('/home/linhhima/PPG_ECG/AF_Detection/detect_af_MIT_BIH_train_min_max.npz')
     # Note: Adjust keys 'X', 'y' to match your .npz file
     X_train = torch.tensor(train_data['X'], dtype=torch.float32)
     y_train = torch.tensor(train_data['y'], dtype=torch.long)

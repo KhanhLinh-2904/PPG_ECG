@@ -1,0 +1,259 @@
+from torch import nn
+import torch
+import torch.nn.functional as F
+import random
+import numpy as np
+from load_data import LoadData
+from torch.utils.data import DataLoader
+from loss import PearsonCorrelationLoss
+ECG_INPUT_LENGTH = 800
+OUTPUT_EMBED_DIM = 128  
+LAYERS = [3, 4, 6, 3] 
+BASE_WIDTH = 64
+EXPANSION = 4 
+
+class LayerNorm1d(nn.Module):
+    def __init__(self, num_channels):
+        super(LayerNorm1d, self).__init__()
+        self.norm = nn.LayerNorm(num_channels)
+
+    def forward(self, x):
+        x = x.transpose(1, 2)  
+        x = self.norm(x)       
+        x = x.transpose(1, 2)  
+        return x
+    
+class Bottleneck1D(nn.Module):
+    def __init__(self, in_channels, out_channels, stride=1, downsample=None):
+        super(Bottleneck1D, self).__init__()
+        self.expansion = EXPANSION
+
+        self.conv1 = nn.Conv1d(in_channels, out_channels, kernel_size=1, bias=False)
+        self.bn1 = LayerNorm1d(out_channels)
+
+        self.conv2 = nn.Conv1d(out_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.bn2 = LayerNorm1d(out_channels)
+
+
+        self.conv3 = nn.Conv1d(out_channels, out_channels * self.expansion, kernel_size=1, bias=False)
+        self.bn3 = LayerNorm1d(out_channels * self.expansion)
+
+        self.prelu = nn.PReLU()
+        self.downsample = downsample
+        self.stride = stride
+
+    def forward(self, x):
+        identity = x
+
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.prelu(out)
+
+        out = self.conv2(out)
+        out = self.bn2(out)
+        out = self.prelu(out)
+
+        out = self.conv3(out)
+        out = self.bn3(out)
+
+        if self.downsample is not None:
+            identity = self.downsample(x)
+
+        out += identity
+        out = self.prelu(out)
+
+        return out
+    
+class ResNet50_1D(nn.Module):
+    def __init__(self, layers=LAYERS, num_classes=OUTPUT_EMBED_DIM):
+        super(ResNet50_1D, self).__init__()
+        self.in_channels = BASE_WIDTH
+
+        self.conv1 = nn.Conv1d(1, BASE_WIDTH, kernel_size=7, stride=2, padding=3, bias=False)
+        self.bn1 = LayerNorm1d(BASE_WIDTH)
+        self.prelu = nn.PReLU()
+        self.maxpool = nn.MaxPool1d(kernel_size=3, stride=2, padding=1)
+
+        self.layer1 = self._make_layer(Bottleneck1D, BASE_WIDTH, layers[0])
+        self.layer2 = self._make_layer(Bottleneck1D, BASE_WIDTH * 2, layers[1], stride=2)
+        self.layer3 = self._make_layer(Bottleneck1D, BASE_WIDTH * 4, layers[2], stride=2)
+        self.layer4 = self._make_layer(Bottleneck1D, BASE_WIDTH * 8, layers[3], stride=2)
+
+        # self.avgpool = nn.AdaptiveAvgPool1d(1)
+    
+    def _make_layer(self, block, out_channels, blocks, stride=1):
+        downsample = None
+        if stride != 1 or self.in_channels != out_channels * EXPANSION:
+            downsample = nn.Sequential(
+                nn.Conv1d(self.in_channels, out_channels * EXPANSION, kernel_size=1, stride=stride, bias=False),
+                LayerNorm1d(out_channels * EXPANSION),
+            )
+
+        layers = []
+        layers.append(block(self.in_channels, out_channels, stride, downsample))
+        self.in_channels = out_channels * EXPANSION
+        for _ in range(1, blocks):
+            layers.append(block(self.in_channels, out_channels))
+
+        return nn.Sequential(*layers)
+    
+    def forward(self, x):
+
+        x= self.conv1(x)
+        x = self.bn1(x)
+        x = self.prelu(x)
+        x = self.maxpool(x)
+        
+        f1 = self.layer1(x) 
+        f2 = self.layer2(f1) 
+        f3 = self.layer3(f2) 
+        f4 = self.layer4(f3) 
+     
+        return f4, [f1, f2, f3]
+
+class DecoderBlock1D(nn.Module):
+    def __init__(self, in_channels, out_channels, stride=1):
+        super(DecoderBlock1D, self).__init__()
+        
+        if stride == 2:
+            self.up = nn.ConvTranspose1d(in_channels, out_channels, kernel_size=4, stride=2, padding=1)
+        else:
+            self.up = nn.Conv1d(in_channels, out_channels, kernel_size=3, stride=1, padding=1)
+            
+        self.bn1 = LayerNorm1d(out_channels) 
+        self.prelu1 = nn.PReLU()
+        
+        self.conv2 = nn.Conv1d(out_channels, out_channels, kernel_size=3, stride=1, padding=1)
+        self.bn2 = LayerNorm1d(out_channels)
+        self.prelu2 = nn.PReLU()
+        
+    def forward(self, x):
+        x = self.up(x)
+        x = self.bn1(x)
+        x = self.prelu1(x)
+        
+        x = self.conv2(x)
+        x = self.bn2(x)
+        x = self.prelu2(x)
+        return x
+
+class ResNet50_1D_Decoder(nn.Module):
+    def __init__(self, out_channels=1, base_width=BASE_WIDTH, expansion=EXPANSION, use_skip=True):
+      
+        super(ResNet50_1D_Decoder, self).__init__()
+        self.use_skip = use_skip
+        
+        in_c4 = base_width * 8 * expansion 
+        
+        self.dec4 = DecoderBlock1D(in_c4, base_width * 4 * expansion, stride=2)
+        
+        in_c3 = (base_width * 4 * expansion) * (2 if use_skip else 1)
+        self.dec3 = DecoderBlock1D(in_c3, base_width * 2 * expansion, stride=2)
+        
+        in_c2 = (base_width * 2 * expansion) * (2 if use_skip else 1)
+        self.dec2 = DecoderBlock1D(in_c2, base_width * expansion, stride=2)
+        
+        in_c1 = (base_width * expansion) * (2 if use_skip else 1)
+        self.dec1 = DecoderBlock1D(in_c1, base_width, stride=1)
+        
+        self.up_pool = nn.ConvTranspose1d(base_width, base_width, kernel_size=4, stride=2, padding=1)
+        self.bn_up = LayerNorm1d(base_width)
+        self.prelu_up = nn.PReLU()
+        
+        self.final_deconv = nn.ConvTranspose1d(
+            base_width, out_channels, 
+            kernel_size=7, stride=2, padding=3, output_padding=1
+        )
+        
+    def forward(self, x, skips=None):
+        x = self.dec4(x)
+        
+        if self.use_skip and skips is not None:
+            x = torch.cat([x, skips[2]], dim=1) 
+        x = self.dec3(x)
+        
+        if self.use_skip and skips is not None:
+            x = torch.cat([x, skips[1]], dim=1) 
+        x = self.dec2(x)
+        
+        if self.use_skip and skips is not None:
+            x = torch.cat([x, skips[0]], dim=1) 
+        x = self.dec1(x)
+        
+        x = self.up_pool(x)
+        x = self.bn_up(x)
+        x = self.prelu_up(x)
+        
+        out = self.final_deconv(x)
+        
+        return out
+
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+if __name__ == "__main__":
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    set_seed(29)
+    NUM_EPOCHS = 55
+    best_loss = float('inf')
+    save_path = "best_autoencoder_ppg.pth"
+
+    train_dataset = LoadData("processed_data/mimic3_v1_2400_train.npz")
+    train_loader = DataLoader(train_dataset, batch_size = 16, shuffle=True)
+    
+    encoder = ResNet50_1D().to(device)
+    decoder = ResNet50_1D_Decoder(use_skip=True).to(device)
+    
+    mse_loss = torch.nn.MSELoss().to(device)
+    pearson_loss =  PearsonCorrelationLoss().to(device)
+    optimizer = torch.optim.Adam(list(encoder.parameters()) + list(decoder.parameters()), lr=0.001)
+
+    for epoch in range(1, NUM_EPOCHS + 1):
+        encoder.train()
+        decoder.train()
+        total_loss = 0.0 
+        for i, (ecg, ppg, _) in enumerate(train_loader):
+            # ecg = ecg.to(device).float().unsqueeze(1)
+            ppg = ppg.to(device).float().unsqueeze(1)
+
+          
+            f4, skips = encoder(ppg)
+            recon_ppg = decoder(f4, skips)
+            loss_mse = mse_loss(recon_ppg, ppg)
+            loss_pearson = pearson_loss(recon_ppg, ppg)
+            loss = loss_mse + loss_pearson
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item()
+        avg_loss = total_loss / len(train_loader)
+        print(f"Epoch [{epoch}/{NUM_EPOCHS}] - Loss: {avg_loss:.4f}")
+
+        if avg_loss < best_loss:
+            best_loss = avg_loss
+            print(f"   => Found new best model with loss: {best_loss:.4f}. Saving...")
+            
+            # Lưu state_dict của cả Encoder, Decoder và Optimizer
+            checkpoint = {
+                'epoch': epoch,
+                'encoder_state_dict': encoder.state_dict(),
+                'decoder_state_dict': decoder.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'loss': best_loss
+            }
+            torch.save(checkpoint, save_path)
+            
+    print(f"Training completed. Best loss achieved: {best_loss:.4f}")
+
+
+
+
+
+
+

@@ -23,7 +23,7 @@ def set_seed(seed=42):
 
 if __name__ == "__main__":
     # ==========================================
-    DO_PRETRAIN = False 
+    DO_PRETRAIN = True 
     DO_FINETUNE = True   
     # ==========================================
 
@@ -31,14 +31,14 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"running on: {device}")
 
-    CHECKPOINT_DIR = "AF_Detection/checkpoints"
+    CHECKPOINT_DIR = "/home/linhhima/PPG_ECG/AF_Detection/checkpoints_coral_knn_minmax/"
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
     pretrained_path = os.path.join(CHECKPOINT_DIR, "pretrained_backbone.pth")
     print(f"folder saved: {CHECKPOINT_DIR}")
 
     print("⏳ loading Train set...")
     try:
-        train_data = np.load('processed_data/MIT_BIH_train_segments.npz')
+        train_data = np.load('/home/linhhima/PPG_ECG/datasets/min_max_norm/MIT_BIH_train_segments.npz')
         X_train = torch.tensor(train_data["ecgs"], dtype=torch.float32)
         y_train = torch.tensor(train_data["labels"], dtype=torch.long)
     except FileNotFoundError:
@@ -56,10 +56,10 @@ if __name__ == "__main__":
     test_loaders = {}
     
     test_files = {
-        "MIT-BIH": 'processed_data/MIT_BIH_test_segments.npz',
-        "Total z (MIMIC AF)": 'datasets/total_z.npz',
-        "(MIMIC AF) z-Recon": 'AF_Detection/total_ecg_reconstructions.npz',
-        "Deepbeat Recon": 'AF_Detection/deepbeat_ecg_reconstructions.npz'
+        "MIT-BIH": '/home/linhhima/PPG_ECG/datasets/min_max_norm/MIT_BIH_test_segments.npz',
+        "Total z (MIMIC AF)": '/home/linhhima/PPG_ECG/datasets/min_max_norm/total_mimic_af_min_max.npz',
+        "(MIMIC AF) z-Recon": '/home/linhhima/PPG_ECG/Disentanglement/results_ppg_to_ecg_dual_branch_test/total_mimic_af_min_max_recon.npz',
+        # "Deepbeat Recon": 'AF_Detection/deepbeat_ecg_reconstructions.npz'
     }
 
     for name, path in test_files.items():

@@ -41,15 +41,15 @@ def apply_coral(source_mu, source_cov, target_features):
 # ==============================================================================
 # PATH CONFIGURATION
 # ==============================================================================
-pretrained_path = 'AF_Detection/checkpoints/pretrained_backbone.pth'
+pretrained_path = '/home/linhhima/PPG_ECG/AF_Detection/checkpoints_coral_knn_minmax/pretrained_backbone.pth'
 # Load file containing CORAL stats and the k-NN model
-coral_model_path = 'AF_Detection/checkpoints/coral_knn_checkpoint.pkl'
+coral_model_path = '/home/linhhima/PPG_ECG/AF_Detection/checkpoints_coral_knn_minmax/coral_knn_checkpoint_13.pkl'
 
 test_files = {
-    "MIT-BIH": 'processed_data/MIT_BIH_test_segments.npz',
-    "Total z (MIMIC AF)": 'datasets/total_z.npz',
-    "Recon ECG MIMIC AF": 'AF_Detection/total_ecg_reconstructions.npz',
-    "Deepbeat Recon": 'AF_Detection/deepbeat_ecg_reconstructions.npz'
+    "MIT-BIH": '/home/linhhima/PPG_ECG/datasets/min_max_norm/MIT_BIH_test_segments.npz',
+    "Total z (MIMIC AF)": '/home/linhhima/PPG_ECG/datasets/min_max_norm/total_mimic_af_min_max.npz',
+    "Recon ECG MIMIC AF": '/home/linhhima/PPG_ECG/Disentanglement/results_ppg_to_ecg_dual_branch_test/total_mimic_af_min_max_recon.npz',
+    # "Deepbeat Recon": '/home/linhhima/PPG_ECG/AF_Detection/deepbeat_ecg_reconstructions.npz'
 }
 
 if __name__ == "__main__":

@@ -124,6 +124,6 @@ if __name__ == "__main__":
     # )
     
     load_data_and_extract_features(
-        datapath="datasets/total_z.npz",
-        output_name="AF_Detection/detect_af_MIMIC_no_rec.npz"
+        datapath="/home/linhhima/PPG_ECG/Disentanglement/results_ppg_to_ecg_dual_branch_test/total_mimic_af_min_max_recon.npz",
+        output_name="/home/linhhima/PPG_ECG/AF_Detection/total_mimic_af_min_max_recon.npz"
     )

@@ -281,36 +281,36 @@ class VQContrastiveLoss(nn.Module):
         
         # =====================================================================
         # =====================================================================
-        if self.plot_matrix:
-            probs = F.softmax(logits, dim=-1)
-            entropy = -torch.sum(probs * torch.log(probs + 1e-8), dim=-1).mean()
-            contrastive_perplexity = torch.exp(entropy).item()
+        # if self.plot_matrix:
+        #     probs = F.softmax(logits, dim=-1)
+        #     entropy = -torch.sum(probs * torch.log(probs + 1e-8), dim=-1).mean()
+        #     contrastive_perplexity = torch.exp(entropy).item()
             
-            logits_np = logits.detach().cpu().numpy()
+        #     logits_np = logits.detach().cpu().numpy()
             
-            plt.figure(figsize=(10, 8))
-            plt.imshow(logits_np, cmap='viridis')
-            plt.colorbar(label='Similarity Score (Scaled by Temperature)')
+        #     plt.figure(figsize=(10, 8))
+        #     plt.imshow(logits_np, cmap='viridis')
+        #     plt.colorbar(label='Similarity Score (Scaled by Temperature)')
             
-            num_samples = c.size(0)
-            title_str = f'Contrastive Logits Matrix (Masked size: {num_samples})\n'
-            title_str += f'Contrastive Perplexity: {contrastive_perplexity:.2f} / {num_samples}'
+        #     num_samples = c.size(0)
+        #     title_str = f'Contrastive Logits Matrix (Masked size: {num_samples})\n'
+        #     title_str += f'Contrastive Perplexity: {contrastive_perplexity:.2f} / {num_samples}'
             
-            if vq_perplexity is not None:
-                vq_perp_val = vq_perplexity.item() if isinstance(vq_perplexity, torch.Tensor) else vq_perplexity
-                title_str += f' | VQ Codebook Perplexity: {vq_perp_val:.2f}'
+        #     if vq_perplexity is not None:
+        #         vq_perp_val = vq_perplexity.item() if isinstance(vq_perplexity, torch.Tensor) else vq_perplexity
+        #         title_str += f' | VQ Codebook Perplexity: {vq_perp_val:.2f}'
                 
-            title_str += '\n( Positive Pairs should have higher similarity )'
+        #     title_str += '\n( Positive Pairs should have higher similarity )'
             
-            plt.title(title_str)
-            plt.xlabel('Codebook Segments Target (q)')
-            plt.ylabel('Masked Hidden Segments (c)')
+        #     plt.title(title_str)
+        #     plt.xlabel('Codebook Segments Target (q)')
+        #     plt.ylabel('Masked Hidden Segments (c)')
             
           
-            plt.draw()        
-            plt.pause(3.0)   
-            plt.close()      
-        # =====================================================================
+        #     plt.draw()        
+        #     plt.pause(3.0)   
+        #     plt.close()      
+        # # =====================================================================
 
         labels = torch.arange(c.size(0), device=c.device)
         

@@ -8,11 +8,11 @@ import matplotlib.pyplot as plt
 from sklearn.metrics import precision_recall_curve, average_precision_score
 
 # ----------- Configuration -----------
-CHECKPOINT_PATH = "AF_Detection/checkpoints_segment/best_model.pth"
-TEST_DATA_PATH = "AF_Detection/detect_af_deepbeat.npz"
+CHECKPOINT_PATH = "/home/linhhima/PPG_ECG/AF_Detection/checkpoints_min_max/best_model.pth"
+TEST_DATA_PATH = "/home/linhhima/PPG_ECG/AF_Detection/total_mimic_af_min_max_recon.npz"
 # TEST_DATA_PATH = "AF_Detection/detect_af_deepbeat.npz"
-# TEST_DATA_PATH = "AF_Detection/detect_af_MIMIC_AF.npz"
-# TEST_DATA_PATH = "AF_Detection/detect_af_MIMIC_no_rec.npz"
+# TEST_DATA_PATH = "/home/linhhima/PPG_ECG/AF_Detection/detect_af_MIMIC_AF.npz"
+# TEST_DATA_PATH = "/home/linhhima/PPG_ECG/AF_Detection/detect_af_MIMIC_no_rec.npz"
 
 
 BATCH_SIZE = 32
