@@ -17,10 +17,10 @@ BATCH_SIZE = 16
 INPUT_LENGTH = 2400
 CHANNELS = 1
 ATTENTION_HEADS = 4
-NT = 200 
+NT = 1000 
 
-TEST_DATA_PATH = '/home/linhhima/Diffusion datasets/test.npz'
-CLIP_MODEL_PATH = '/home/linhhima/PPG_ECG/best_conditional_diffusion.pth'
+TEST_DATA_PATH = 'datasets/z_score_norm/total_mimic_af.npz'
+CLIP_MODEL_PATH = '/home/linhhima/PPG_ECG/datasets/z_score_norm/best_conditional_diffusion.pth'
 
 def set_seed(seed):
     random.seed(seed)
@@ -363,6 +363,6 @@ def run_loss():
     print(f"{'='*40}")
 
 if __name__ == "__main__":
-    run_visualization()
+    # run_visualization()
     # run_loss()
-    # save_ecg_reconstruction("AF_Detection/total_mimic_af.npz")
+    save_ecg_reconstruction("AF_Detection/total_mimic_af.npz")

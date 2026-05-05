@@ -1,17 +1,11 @@
 import math
 from typing import Dict, List, Tuple
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 
-# =========================================================
-# 1. BASIC BLOCKS
-# =========================================================
-
 class LayerNorm1D(nn.Module):
-    """LayerNorm cho tensor [B, C, T]."""
     def __init__(self, num_channels: int, eps: float = 1e-6):
         super().__init__()
         self.norm = nn.LayerNorm(num_channels, eps=eps)
@@ -21,7 +15,6 @@ class LayerNorm1D(nn.Module):
 
 
 class GRN1D(nn.Module):
-    """Global Response Normalization bản 1D."""
     def __init__(self, dim: int, eps: float = 1e-6):
         super().__init__()
         self.gamma = nn.Parameter(torch.zeros(1, dim, 1))
@@ -35,7 +28,6 @@ class GRN1D(nn.Module):
 
 
 class DropPath(nn.Module):
-    """Stochastic Depth."""
     def __init__(self, drop_prob: float = 0.0):
         super().__init__()
         self.drop_prob = float(drop_prob)
@@ -51,7 +43,6 @@ class DropPath(nn.Module):
 
 
 class ConvNeXtBlock1D(nn.Module):
-    """ConvNeXt-style block cho tín hiệu 1D."""
     def __init__(self, dim: int, expansion: int = 4, drop_path: float = 0.0):
         super().__init__()
         self.dwconv = nn.Conv1d(dim, dim, kernel_size=7, padding=3, groups=dim)
@@ -75,7 +66,6 @@ class ConvNeXtBlock1D(nn.Module):
 
 
 class MultiKernelStem1D(nn.Module):
-    """Stem nhiều kernel để bắt nhiều thang thời gian."""
     def __init__(self, in_ch: int, out_ch: int, stride: int = 2):
         super().__init__()
         c1 = out_ch // 3
@@ -166,7 +156,6 @@ class PositionalEncoding1D(nn.Module):
 
 
 class SelfAttentionBlock1D(nn.Module):
-    """Self-attention nhẹ cho bottleneck."""
     def __init__(self, dim: int, num_heads: int = 8, mlp_ratio: float = 4.0, dropout: float = 0.1):
         super().__init__()
         self.pos = PositionalEncoding1D(dim)
@@ -199,9 +188,6 @@ class SelfAttentionBlock1D(nn.Module):
         return xt.transpose(1, 2)
 
 
-# =========================================================
-# 2. SIGNAL HELPERS
-# =========================================================
 
 def first_derivative(x: torch.Tensor) -> torch.Tensor:
     return torch.cat([torch.zeros_like(x[:, :, :1]), x[:, :, 1:] - x[:, :, :-1]], dim=2)
@@ -224,16 +210,7 @@ def z_norm_channelwise(x: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
     return (x - mean) / std
 
 
-# =========================================================
-# 3. SHARED STEM
-# =========================================================
-
 class SharedPPGStem(nn.Module):
-    """
-    Shared stem cho PPG.
-    Input gợi ý:
-    [ppg_raw, vpg, apg, smooth, trend]
-    """
     def __init__(
         self,
         in_ch: int = 5,
@@ -252,17 +229,8 @@ class SharedPPGStem(nn.Module):
         x = self.blocks(x)
         return x
 
-
-# =========================================================
-# 4. BRANCH ENCODERS
-# =========================================================
-
 class ECGComponentEncoderBranch(nn.Module):
-    """
-    Một nhánh encoder chuyên biệt:
-    - branch_qrs
-    - branch_non_qrs
-    """
+
     def __init__(
         self,
         in_ch: int,
@@ -300,16 +268,8 @@ class ECGComponentEncoderBranch(nn.Module):
         return z, skips
 
 
-# =========================================================
-# 5. BRANCH DECODERS
-# =========================================================
-
 class ECGComponentDecoder(nn.Module):
-    """
-    Decoder head để tái tạo:
-    - ECG_QRS
-    - ECG_non_QRS
-    """
+   
     def __init__(self, dims: Tuple[int, int, int, int] = (48, 96, 128, 256), out_ch: int = 1):
         super().__init__()
         d1, d2, d3, d4 = dims
@@ -347,25 +307,12 @@ class ECGComponentDecoder(nn.Module):
         return y
 
 
-# =========================================================
-# 6. FUSION HEAD
-# =========================================================
 
 class ECGFusionHead(nn.Module):
-    """
-    Hợp nhất 2 thành phần:
-    - ecg_qrs_pred
-    - ecg_non_qrs_pred
 
-    Output:
-    - ecg_final_pred
-    - gate
-    - residual
-    """
     def __init__(self, hidden_ch: int = 32):
         super().__init__()
 
-        # input channels:
         # [qrs, non, qrs+non, qrs-non] => 4 channels
         self.fusion = nn.Sequential(
             nn.Conv1d(4, hidden_ch, kernel_size=7, padding=3),
@@ -410,27 +357,9 @@ class ECGFusionHead(nn.Module):
         }
 
 
-# =========================================================
-# 7. FULL MODEL
-# =========================================================
 
 class PPGtoECGDualBranchReconstructionNet(nn.Module):
-    """
-    PPG -> ECG reconstruction với 2 nhánh:
-    - Branch 1: tái tạo ECG_QRS
-    - Branch 2: tái tạo ECG_non_QRS
-    - Fusion head: ghép lại thành ECG cuối
-
-    Output:
-        {
-            "ecg_qrs_pred": ...,
-            "ecg_non_qrs_pred": ...,
-            "ecg_final_pred": ...,
-            "gate": ...,
-            "residual": ...,
-            ...
-        }
-    """
+  
     def __init__(
         self,
         input_len: int = 2400,
@@ -541,5 +470,4 @@ class PPGtoECGDualBranchReconstructionNet(nn.Module):
         if return_features:
             out.update(encoded)
         return out
-
 

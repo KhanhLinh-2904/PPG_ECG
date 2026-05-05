@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import random
 
-from Diffusion import ConditionNet, DiffusionUNetCrossAttention, ddpm_schedule
+from Knowledge_Distillation.Diffusion import ConditionNet, DiffusionUNetCrossAttention, ddpm_schedule
 from load_data import LoadData
 
 # ==========================================
@@ -149,10 +149,10 @@ if __name__ == "__main__":
     device = CONFIG["device"]
     
     # 1. Load Dataloaders
-    train_loader = DataLoader(LoadData('/home/linhhima/Diffusion datasets/train.npz'), 
+    train_loader = DataLoader(LoadData('/home/linhhima/PPG_ECG/datasets/z_score_norm/mimic_III_train.npz'), 
                               batch_size=CONFIG["batch_size"], shuffle=True, 
                               num_workers=CONFIG["num_workers"], pin_memory=True)
-    test_loader = DataLoader(LoadData('/home/linhhima/Diffusion datasets/val.npz'), 
+    test_loader = DataLoader(LoadData('/home/linhhima/PPG_ECG/datasets/z_score_norm/mimic_III_test.npz'), 
                              batch_size=CONFIG["batch_size"], shuffle=False, 
                              num_workers=CONFIG["num_workers"], pin_memory=True)
     

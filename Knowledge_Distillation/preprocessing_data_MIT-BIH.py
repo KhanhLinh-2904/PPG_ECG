@@ -2,7 +2,7 @@ import wfdb
 import numpy as np
 import os
 import matplotlib.pyplot as plt
-from preprocessing import SignalProcessor
+from preprocessing_signal import SignalProcessor
 import random
 from utils import calculate_bsqi
 TARGET_FS = 250
@@ -17,12 +17,11 @@ set_seed(seed)
 
 def mask_filter(ecg): 
     ecg_sqi = calculate_bsqi(ecg, fs=250)
-    # print("ECG SQI: ", ecg_sqi)
     if ecg_sqi < 0.3:
         return True
     return False
 
-def visualize_af_vs_normal_separate(segments, labels, records, fs):
+def visualize(segments, labels, records, fs):
     af_indices = np.where(labels == 1)[0]
     normal_indices = np.where(labels == 0)[0]
     if len(af_indices) == 0 or len(normal_indices) == 0:
@@ -234,7 +233,7 @@ def loadData(data_path="/home/linhhima/Pre_processing_data/Datasets/mit-bih-AF")
         return None, None, None
 
         
-def save_train_test_split_record(segments, labels, names, save_path="./processed_data/", seed=42):
+def save_train_test_split_record(segments, labels, names, save_path="/home/linhhima/PPG_ECG/datasets/", seed=42):
     ratio = 0.8
     if not os.path.exists(save_path):
         os.makedirs(save_path)

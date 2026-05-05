@@ -1,10 +1,9 @@
 
 import numpy as np
 import os
-from preprocessing import SignalProcessor
+from preprocessing_signal import SignalProcessor
 from utils import calculate_sq_mask
 import matplotlib.pyplot as plt
-# --- Configuration ---
 PATH = "/home/linhhima/Pre_processing_data/Datasets/deepbeat_data_extract/"
 FILES = ["train_cleaned_signals.npz", "val_cleaned_signals.npz", "test_cleaned_signals.npz"]
 SAVE_PATH = os.path.join("processed_data", "deepbeat_combined.npz")
@@ -64,13 +63,12 @@ def combine_and_preprocess_datasets():
                 label_val = y_data[i]
                 all_labels.append(label_val)
 
-                # # 3. Representative Sample Display Logic (Runs only once per label type)
+                # # 3. Representative Sample Display Logic 
                 # is_af = (label_val == 1)
                 
                 # if (is_af and not visualized_af):
                 #     plt.figure(figsize=(12, 4))
                     
-                #     # Set colors and titles based on class labels
                 #     color = '#e74c3c' if is_af else '#27ae60'
                 #     title = "REPRESENTATIVE: AFIB (Label 1)" if is_af else "REPRESENTATIVE: Non-AF/Normal (Label 0)"
                     
@@ -84,7 +82,6 @@ def combine_and_preprocess_datasets():
                 #     plt.tight_layout()
                 #     plt.show()
 
-                #     # Mark as displayed to prevent repetition in subsequent segments
                 #     # if is_af: visualized_af = True
                 #     # else: visualized_non_af = True
               
