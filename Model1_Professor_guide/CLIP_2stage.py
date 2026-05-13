@@ -22,32 +22,32 @@ class FFT_FeatureExtractor(nn.Module):
         freq_pooled = mag_out.mean(dim=-1) 
         
         return freq_pooled
+    
 class CrossAttentionFusion(nn.Module):
     def __init__(self, time_channels=2048, freq_channels=2048, embed_dim=512, num_heads=8):
         super(CrossAttentionFusion, self).__init__()
         self.query_proj = nn.Linear(time_channels, embed_dim)
         self.kv_proj = nn.Linear(freq_channels, embed_dim)
         self.attention = nn.MultiheadAttention(embed_dim=embed_dim, num_heads=num_heads, batch_first=True)
-        
-        # self.out_proj = nn.Linear(embed_dim, time_channels)
-        
-        self.layer_norm = nn.LayerNorm(embed_dim)
+        self.out_proj = nn.Linear(embed_dim, time_channels)
+        self.layer_norm = nn.LayerNorm(time_channels)
 
     def forward(self, time_feat, freq_feat):
         Q_orig = time_feat.transpose(1, 2)  
-        Q_proj = self.query_proj(Q_orig)         # [B, L, 512]
+        Q_proj = self.query_proj(Q_orig)         
         
-        # freq_feat: [B, 256] -> [B, 1, 256]
         K = freq_feat.unsqueeze(1)     
-        K_proj = self.kv_proj(K)            # [B, 1, 512]
+        K_proj = self.kv_proj(K)               
         V_proj = K_proj                          
         
-        # Cross-Attention output: [B, L, 512]
         attn_output, _ = self.attention(query=Q_proj, key=K_proj, value=V_proj)
         
-        # attn_output_projected = self.out_proj(attn_output)  # [B, L, 2048]
+        attn_output_projected = self.out_proj(attn_output)  
         
-        fused_feat = self.layer_norm( attn_output)
+        fused_feat = Q_orig + attn_output_projected
+        
+        fused_feat = self.layer_norm(fused_feat)
+        
         return fused_feat.transpose(1, 2)
 
 class DualDomainEncoder(nn.Module):
@@ -135,19 +135,20 @@ class ECG_PPG_Fusion_Model(nn.Module):
         self.encode_ppg = DualDomainEncoder(in_channels=self.fused_dim, freq_dim=self.fused_dim)
 
         self.decoder = ECGDecoder_Transformer(
-            bottleneck_channels=512, 
+            bottleneck_channels=self.fused_dim, 
             d_model=256, 
             nhead=8, 
             num_layers=4, 
             target_length=target_length
         )
 
-    def forward(self, ecg_signal, ppg_signal):
-        z_ppg_1d, z_ppg_3d = self.encode_ppg(ppg_signal)
-        reconstructed_ecg = self.decoder(z_ppg_3d)
-
-        if ecg_signal is not None:
+    def forward(self, ecg_signal=None, ppg_signal=None, phase=1):
+        if phase == 1:
             z_ecg_1d, z_ecg_3d = self.encode_ecg(ecg_signal)
-            return z_ecg_1d, z_ppg_1d, reconstructed_ecg
-
-        return reconstructed_ecg
+            reconstructed_ecg = self.decoder(z_ecg_3d)
+            return reconstructed_ecg
+            
+        elif phase == 2:
+            z_ecg_1d, _ = self.encode_ecg(ecg_signal)
+            z_ppg_1d, _ = self.encode_ppg(ppg_signal)
+            return z_ppg_1d, z_ecg_1d

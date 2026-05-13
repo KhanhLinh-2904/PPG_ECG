@@ -144,9 +144,9 @@ def evaluate(model, dataloader, contrast_loss_fn, mse_loss_fn, pearson_loss_fn, 
 if __name__ == "__main__":
     set_seed(SEED)
     
-    train_loader = DataLoader(LoadData('/home/linhhima/PPG_ECG/datasets/z_score_norm/mimic_III_train.npz'), 
+    train_loader = DataLoader(LoadData('/home/linhhima/Diffusion datasets/combined_segment_split_train.npz'), 
                               batch_size=BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True)
-    test_loader = DataLoader(LoadData('/home/linhhima/PPG_ECG/datasets/z_score_norm/mimic_III_test.npz'), 
+    test_loader = DataLoader(LoadData('/home/linhhima/Diffusion datasets/combined_segment_split_val.npz'), 
                              batch_size=BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True)
     
     model = ECG_PPG_Fusion_Model(embed_dim=OUTPUT_EMBED_DIM, freq_dim=256, target_length=SEQ_LENGTH).to(device)

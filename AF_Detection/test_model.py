@@ -9,7 +9,7 @@ from sklearn.metrics import precision_recall_curve, average_precision_score
 
 # ----------- Configuration -----------
 CHECKPOINT_PATH = "/home/linhhima/PPG_ECG/AF_Detection/checkpoints/best_model.pth"
-TEST_DATA_PATH = "/home/linhhima/PPG_ECG/AF_Detection/new_model_still_developed/total_mimic_af_z_score_recon.npz"
+TEST_DATA_PATH = "/home/linhhima/PPG_ECG/AF_Detection/total_mimic_af_z_score_recon.npz"
 # TEST_DATA_PATH = "AF_Detection/detect_af_deepbeat.npz"
 # TEST_DATA_PATH = "/home/linhhima/PPG_ECG/AF_Detection/detect_af_MIMIC_AF.npz"
 # TEST_DATA_PATH = "/home/linhhima/PPG_ECG/AF_Detection/detect_af_MIMIC_no_rec.npz"
@@ -89,32 +89,32 @@ print(f"Specificity: {specificity:.4f}")
 fpr, tpr, thresholds = roc_curve(all_labels, all_probs)
 roc_auc = auc(fpr, tpr)
 
-# Plotting
-plt.figure()
-plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'AUROC = {roc_auc:.4f}')
-plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
-plt.xlim([0.0, 1.0])
-plt.ylim([0.0, 1.05])
-plt.xlabel('False Positive Rate')
-plt.ylabel('True Positive Rate (Recall)')
-plt.title('Receiver Operating Characteristic (ROC) Curve')
-plt.legend(loc="lower right")
-plt.grid(True)
-plt.show()
+# # Plotting
+# plt.figure()
+# plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'AUROC = {roc_auc:.4f}')
+# plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+# plt.xlim([0.0, 1.0])
+# plt.ylim([0.0, 1.05])
+# plt.xlabel('False Positive Rate')
+# plt.ylabel('True Positive Rate (Recall)')
+# plt.title('Receiver Operating Characteristic (ROC) Curve')
+# plt.legend(loc="lower right")
+# plt.grid(True)
+# plt.show()
 
-# ----------- Compute PRC and Average Precision -----------
-precision_curve, recall_curve, prc_thresholds = precision_recall_curve(all_labels, all_probs)
-avg_precision = average_precision_score(all_labels, all_probs)
+# # ----------- Compute PRC and Average Precision -----------
+# precision_curve, recall_curve, prc_thresholds = precision_recall_curve(all_labels, all_probs)
+# avg_precision = average_precision_score(all_labels, all_probs)
 
-# ----------- Plot Precision-Recall Curve -----------
-plt.figure()
-plt.plot(recall_curve, precision_curve, color='blue', lw=2,
-         label=f'Average Precision (AP) = {avg_precision:.4f}')
-plt.xlabel('Recall')
-plt.ylabel('Precision')
-plt.title('Precision-Recall (PRC) Curve')
-plt.grid(True)
-plt.legend(loc='lower left')
-plt.ylim([0.0, 1.05])
-plt.xlim([0.0, 1.0])
-plt.show()
+# # ----------- Plot Precision-Recall Curve -----------
+# plt.figure()
+# plt.plot(recall_curve, precision_curve, color='blue', lw=2,
+#          label=f'Average Precision (AP) = {avg_precision:.4f}')
+# plt.xlabel('Recall')
+# plt.ylabel('Precision')
+# plt.title('Precision-Recall (PRC) Curve')
+# plt.grid(True)
+# plt.legend(loc='lower left')
+# plt.ylim([0.0, 1.05])
+# plt.xlim([0.0, 1.0])
+# plt.show()

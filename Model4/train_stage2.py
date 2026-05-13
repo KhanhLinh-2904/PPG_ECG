@@ -16,9 +16,7 @@ from tqdm import tqdm
 from load_data import LoadData
 from ecg2ecg import ECGAutoencoder, ECGAEConfig
 from ppg2ecg import PPG2ECGModel, PPG2ECGConfig
-
-# Đổi import từ CNN sang Transformer
-from flow_model import LatentTransformerFlow
+from flow_model import LatentRectifiedFlow
 
 # ============================================================
 # 1. CẤU HÌNH CHO GIAI ĐOẠN 2 (STAGE 2 CONFIG)
@@ -36,11 +34,11 @@ class Stage2TrainConfig:
     ppg_checkpoint_path: str = "/home/linhhima/PPG_ECG/Result_model2/saved_models_alignment_batch_32/best_ppg_alignment.pth"
     
     # Đường dẫn lưu mô hình Stage 2
-    save_dir: str = "saved_models_flow_transformer" # Đổi tên thư mục lưu để tránh ghi đè
-    best_model_name: str = "best_rectified_flow.pth"
+    save_dir: str = "saved_models_flow_cfg" # Đổi tên thư mục một chút để phân biệt
+    best_model_name: str = "best_rectified_flow_cfg.pth"
 
     # Training Params cho Rectified Flow
-    batch_size: int = 256  
+    batch_size: int = 128  
     epochs: int = 300
     num_workers: int = 4
     lr: float = 2e-4       
@@ -48,6 +46,9 @@ class Stage2TrainConfig:
     grad_clip: float = 1.0
     use_amp: bool = True
     patience: int = 30
+    
+    # MỚI: Tỷ lệ drop condition cho Classifier-Free Guidance
+    cfg_drop_prob: float = 0.1 
 
     # Kiến trúc không gian Latent (Kế thừa từ Stage 1)
     input_length: int = 2400
@@ -56,10 +57,9 @@ class Stage2TrainConfig:
     dims: tuple = (64, 128, 256, 512)
     depths: tuple = (2, 2, 4, 2)
     
-    # Kiến trúc Transformer Flow Model (Mới thêm)
-    embed_dim: int = 256
-    num_heads: int = 8
-    num_layers: int = 6
+    # Kiến trúc Flow Model
+    flow_hidden_dim: int = 128
+    flow_num_blocks: int = 6
 
 CFG = Stage2TrainConfig()
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -92,7 +92,6 @@ def get_dataloaders():
 def load_frozen_stage1():
     print("[*] Đang tải và đóng băng các mô hình Stage 1 (ECG Teacher & PPG Encoder)...")
     
-    # Khởi tạo Config 
     ecg_cfg = ECGAEConfig(
         input_length=CFG.input_length, in_channels=1, dims=CFG.dims, depths=CFG.depths,
         latent_channels=CFG.latent_channels, latent_length=CFG.latent_length,
@@ -104,7 +103,6 @@ def load_frozen_stage1():
         attn_heads=8, attn_dropout=0.0, use_derivatives=True, proj_dim=128
     )
 
-    # 1. Load ECG Teacher
     ecg_ae = ECGAutoencoder(ecg_cfg).to(DEVICE)
     if not os.path.exists(CFG.ecg_checkpoint_path):
         raise FileNotFoundError(f"Lỗi: Không tìm thấy trọng số ECG Teacher tại {CFG.ecg_checkpoint_path}")
@@ -113,7 +111,6 @@ def load_frozen_stage1():
     ecg_ae.eval()
     for p in ecg_ae.parameters(): p.requires_grad = False
 
-    # 2. Load PPG Aligned Encoder
     ppg_model = PPG2ECGModel(ecg_ae=ecg_ae, cfg=ppg_cfg).to(DEVICE)
     if not os.path.exists(CFG.ppg_checkpoint_path):
         raise FileNotFoundError(f"Lỗi: Không tìm thấy trọng số PPG Alignment tại {CFG.ppg_checkpoint_path}")
@@ -141,31 +138,33 @@ def train_one_epoch(flow_model, ecg_ae, ppg_model, optimizer, scaler, dataloader
         with torch.no_grad():
             feat_ecg = ecg_ae.encoder(ecg)
             z_ecg = ecg_ae.latent_head(feat_ecg)   # Target
-            
+           
             feat_ppg = ppg_model.ppg_encoder(ppg)
             z_ppg = ppg_model.ppg_latent_head(feat_ppg) # Condition
 
+        # MỚI: Logic Classifier-Free Guidance (CFG) Drop
+        # Tạo một mask quyết định xem sample nào trong batch sẽ bị mất điều kiện (unconditional)
+        # Xác suất drop = 0.1 (10% sẽ không có điều kiện PPG)
+        drop_mask = torch.rand((B, 1, 1), device=DEVICE) < CFG.cfg_drop_prob
+        # Những chỗ drop_mask = True, z_ppg sẽ bị ép về 0
+        z_ppg_cond = torch.where(drop_mask, torch.zeros_like(z_ppg), z_ppg)
+
         # 2. THIẾT LẬP RECTIFIED FLOW
-        z0 = torch.randn_like(z_ecg) # Lấy mẫu nhiễu N(0, I)
+        # z0 = torch.randn_like(z_ecg) # Lấy mẫu nhiễu N(0, I)
+        z0 = z_ppg
         
-        # t ~ Uniform(0, 1)
         t = torch.rand((B,), device=DEVICE)
-        t_expand = t.view(B, 1, 1) # [B, 1, 1] để nhân với latent [B, C, L]
+        t_expand = t.view(B, 1, 1) 
         
-        # Đường đi nội suy tuyến tính: x_t = t * z_ecg + (1 - t) * z0
         xt = t_expand * z_ecg + (1.0 - t_expand) * z0
-        
-        # Hướng lý tưởng cần học (Straight-line vector)
         v_target = z_ecg - z0
 
         # 3. HUẤN LUYỆN
         optimizer.zero_grad(set_to_none=True)
 
         with autocast(enabled=CFG.use_amp):
-            # Dự đoán trường vector v bằng Transformer
-            v_pred = flow_model(xt, t, z_ppg)
-            
-            # Hàm mất mát MSE
+            # Dự đoán trường vector v với điều kiện z_ppg_cond (đã bị drop ngẫu nhiên)
+            v_pred = flow_model(xt, t, z_ppg_cond)
             loss = F.mse_loss(v_pred, v_target)
 
         scaler.scale(loss).backward()
@@ -192,16 +191,19 @@ def val_one_epoch(flow_model, ecg_ae, ppg_model, dataloader):
 
         feat_ecg = ecg_ae.encoder(ecg)
         z_ecg = ecg_ae.latent_head(feat_ecg)
+
         feat_ppg = ppg_model.ppg_encoder(ppg)
         z_ppg = ppg_model.ppg_latent_head(feat_ppg)
 
-        z0 = torch.randn_like(z_ecg)
+        # z0 = torch.randn_like(z_ecg)
+        z0 = z_ppg
         t = torch.rand((B,), device=DEVICE)
         t_expand = t.view(B, 1, 1)
         
         xt = t_expand * z_ecg + (1.0 - t_expand) * z0
         v_target = z_ecg - z0
 
+        # Trong Validation, ta đo Loss với đầy đủ điều kiện (Không Drop)
         v_pred = flow_model(xt, t, z_ppg)
         loss = F.mse_loss(v_pred, v_target)
 
@@ -216,22 +218,16 @@ def main():
     set_seed(CFG.seed)
     print(f"[*] Đang sử dụng thiết bị: {DEVICE}")
 
-    # 1. Load Data
     train_loader, val_loader = get_dataloaders()
-
-    # 2. Load Frozen Stage 1
     ecg_ae, ppg_model = load_frozen_stage1()
 
-    # 3. Khởi tạo Mô hình Transformer Flow (Stage 2)
-    flow_model = LatentTransformerFlow(
+    flow_model = LatentRectifiedFlow(
         latent_channels=CFG.latent_channels, 
-        latent_length=CFG.latent_length,
-        embed_dim=CFG.embed_dim,
-        num_heads=CFG.num_heads,
-        num_layers=CFG.num_layers
+        cond_channels=CFG.latent_channels, 
+        hidden_dim=CFG.flow_hidden_dim, 
+        num_blocks=CFG.flow_num_blocks
     ).to(DEVICE)
 
-    # 4. Optimizer & Scheduler
     optimizer = optim.AdamW(flow_model.parameters(), lr=CFG.lr, weight_decay=CFG.weight_decay)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=10, verbose=True)
     scaler = GradScaler(enabled=CFG.use_amp)
@@ -241,7 +237,7 @@ def main():
     save_path = os.path.join(CFG.save_dir, CFG.best_model_name)
 
     print("\n" + "="*50)
-    print("[*] BẮT ĐẦU HUẤN LUYỆN GIAI ĐOẠN 2: LATENT TRANSFORMER FLOW")
+    print("[*] BẮT ĐẦU HUẤN LUYỆN GIAI ĐOẠN 2: LATENT RECTIFIED FLOW VỚI CFG")
     print("="*50 + "\n")
 
     for epoch in range(1, CFG.epochs + 1):
@@ -253,17 +249,15 @@ def main():
 
         print(f"   => [Epoch {epoch}] Train MSE: {train_mse:.5f} | Val MSE: {val_mse:.5f}")
 
-        # Checkpoint
         if val_mse < best_val_loss:
             best_val_loss = val_mse
             bad_epochs = 0
             torch.save(flow_model.state_dict(), save_path)
-            print(f"   [+] Đã lưu mô hình Transformer Flow tốt nhất (Val MSE giảm xuống {best_val_loss:.5f})!")
+            print(f"   [+] Đã lưu mô hình Flow tốt nhất (Val MSE giảm xuống {best_val_loss:.5f})!")
         else:
             bad_epochs += 1
             print(f"   [-] Loss Val không cải thiện trong {bad_epochs} epoch(s).")
 
-        # Early Stopping
         if bad_epochs >= CFG.patience:
             print(f"\n[!] Kích hoạt Early Stopping tại epoch {epoch}.")
             break

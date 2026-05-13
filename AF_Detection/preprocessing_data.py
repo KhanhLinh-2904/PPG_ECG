@@ -124,6 +124,6 @@ if __name__ == "__main__":
     # )
     
     load_data_and_extract_features(
-        datapath="/home/linhhima/PPG_ECG/AF_Detection/total_mimic_af.npz",
+        datapath="/home/linhhima/PPG_ECG/AF_Detection/total_mimic_af_recon.npz",
         output_name="/home/linhhima/PPG_ECG/AF_Detection/total_mimic_af_z_score_recon.npz"
     )

@@ -3,21 +3,29 @@ import numpy as np
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
 from load_data import LoadData
-from CLIP import PPG2ECGModel  
 import random
 import os
 from metric import calculate_cosine_similarity, calculate_dtw_distance, calculate_metrics
 from scipy.signal import correlate
+
+# Import Model Configurations và Classes
+from ecg2ecg import ECGAutoencoder, ECGAEConfig
+from ppg2ecg import PPG2ECGModel, PPG2ECGConfig  # Cập nhật tên file import của bạn
+
+# ==========================================
 # --- CONFIGURATION ---
+# ==========================================
 SEED = 40
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 BATCH_SIZE = 64
-INPUT_LENGTH = 2400
-OUTPUT_EMBED_DIM = 128
 SEQ_LENGTH = 2400
 TEST_DATA_PATH = '/home/linhhima/PPG_ECG/datasets/z_score_norm/total_mimic_af.npz'
-CLIP_MODEL_PATH = '/home/linhhima/PPG_ECG/best_multitask_model.pth'
 
+# Đường dẫn trọng số
+PHASE1_MODEL_PATH = '/home/linhhima/PPG_ECG/saved_models_ecg_vae/best_ecg_autoencoder.pth'
+PHASE2_MODEL_PATH = '/home/linhhima/PPG_ECG/saved_models_alignment/best_ppg_alignment.pth'
+
+# ==========================================
 
 def set_seed(seed):
     random.seed(seed)
@@ -27,70 +35,54 @@ def set_seed(seed):
         torch.cuda.manual_seed_all(seed)
 
 def load_model():
-    print(f"Loading model on {DEVICE}...")
+    print(f"[*] Loading PPG2ECG Fusion Model on {DEVICE}...")
     
-    model = PPG2ECGModel(proj_dim=OUTPUT_EMBED_DIM).to(DEVICE)
+    # 1. Cấu hình & Load ECG Teacher (Bắt buộc để PPG có Decoder sinh ảnh)
+    ecg_cfg = ECGAEConfig(
+        input_length=SEQ_LENGTH, in_channels=1, dims=(64, 128, 256, 512),
+        depths=(2, 2, 4, 2), latent_channels=16, latent_length=75,
+        attn_heads=8, attn_dropout=0.0, global_latent_dim=128, trend_poly=2
+    )
 
-    if torch.cuda.is_available():
-        weights = torch.load(CLIP_MODEL_PATH)
-    else:
-        weights = torch.load(CLIP_MODEL_PATH, map_location='cpu')
-
-    model.load_state_dict(weights)
-
+    ecg_ae = ECGAutoencoder(ecg_cfg).to(DEVICE)
+    if not os.path.exists(PHASE1_MODEL_PATH):
+        raise FileNotFoundError(f"Lỗi: Cần trọng số Phase 1 để khởi tạo Teacher: {PHASE1_MODEL_PATH}")
+    ckpt1 = torch.load(PHASE1_MODEL_PATH, map_location=DEVICE)
+    ecg_ae.load_state_dict(ckpt1.get("model_state_dict", ckpt1))
+    
+    # 2. Khởi tạo PPG Student Config
+    ppg_cfg = PPG2ECGConfig(
+        input_length=SEQ_LENGTH, ppg_in_channels=1, dims=(64, 128, 256, 512),
+        depths=(2, 2, 4, 2), latent_channels=16, latent_length=75,
+        attn_heads=8, attn_dropout=0.0, use_derivatives=True, proj_dim=128
+    )
+    
+    # 3. Load PPG2ECG Model
+    model = PPG2ECGModel(ecg_ae=ecg_ae, cfg=ppg_cfg).to(DEVICE)
+    if not os.path.exists(PHASE2_MODEL_PATH):
+        raise FileNotFoundError(f"Lỗi: Không tìm thấy trọng số Phase 2: {PHASE2_MODEL_PATH}")
+    
+    checkpoint = torch.load(PHASE2_MODEL_PATH, map_location=DEVICE)
+    model.load_state_dict(checkpoint.get("model_state_dict", checkpoint))
     model.eval()
-    
     return model
 
-def save_ecg_reconstruction(output_path="AF_Detection/ecg_reconstructions.npz"):
-    set_seed(SEED)
-    model = load_model()
-    
-    all_predicted_ecgs = []
-    all_original_ppgs = []
-    all_labels = []
-    all_record_names = []
+def get_prediction(model, ppg_input):
+    """ 
+    Hàm hỗ trợ inference: Trích xuất z_ppg -> Chạy qua Decoder của Teacher -> Sóng ECG.
+    """
+    outputs = model(ppg_input)
+    z_ppg = outputs["z_ppg"]
+    ecg_pred = model.ecg_decoder(z_ppg)
+    return ecg_pred
 
-    try:
-        test_dataset = LoadData(TEST_DATA_PATH)
-        test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=True)
-    except Exception as e:
-        print(f"Error: {e}")
-        return
-   
-    print("Running inference and saving reconstructions...")
-    with torch.no_grad():
-        for i, (ecg, ppg, record_names, label) in enumerate(test_loader):
-            ppg_input = ppg.to(DEVICE).float().unsqueeze(1)
-            # print("record name: ", record_names)
-            
-            # predicted_ecg = model(None, ppg_input)
-            outputs = model(ppg = ppg_input, ecg = None)
-            predicted_ecg = outputs["recon_ecg"]
-            
-            all_predicted_ecgs.append(predicted_ecg.squeeze(1).cpu().numpy())
-            all_original_ppgs.append(ppg.cpu().numpy())
-            all_labels.append(label.cpu().numpy())
-            all_record_names.append(record_names)
-            
-    save_dict = {
-        "ecgs": np.concatenate(all_predicted_ecgs, axis=0),
-        "ppgs": np.concatenate(all_original_ppgs, axis=0),
-        "labels": np.concatenate(all_labels, axis=0),
-        "records": np.array(all_record_names, dtype=object) 
-    }
-    
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    np.savez_compressed(output_path, **save_dict)
-    print(f"Saved reconstructions to {output_path}")
-
-def visualize_results(ppg, ecg_true, ecg_pred, sample_idx, record_name):
+def visualize_results(ppg, ecg_true, ecg_pred, record_name):
     print(f"Visualizing Record: {record_name}")
-    t_ppg = np.arange(len(ppg))
     t_ecg = np.arange(len(ecg_true))
-
+    t_ppg = np.arange(len(ppg))
+    
     plt.figure(figsize=(12, 10))
-    plt.suptitle(f"Record: {record_name} - Sample ID: {sample_idx}", fontsize=14, fontweight='bold')
+    plt.suptitle(f"[PPG to ECG Fusion] Record: {record_name}", fontsize=14, fontweight='bold')
 
     plt.subplot(4, 1, 1)
     plt.plot(t_ppg, ppg, color='green', label='Input PPG')
@@ -106,7 +98,7 @@ def visualize_results(ppg, ecg_true, ecg_pred, sample_idx, record_name):
 
     plt.subplot(4, 1, 3)
     plt.plot(t_ecg, ecg_pred, color='red', label='Predicted ECG')
-    plt.title("Predicted ECG (Reconstructed)")
+    plt.title("Predicted ECG (Generated from PPG Latent)")
     plt.grid(True, alpha=0.3)
     plt.legend(loc='upper right')
 
@@ -130,19 +122,19 @@ def run_visualization():
         test_dataset = LoadData(TEST_DATA_PATH)
         test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=True)
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Error loading data: {e}")
         return
    
-    print("Running inference for visualization...")
+    print("Running visualization...")
     with torch.no_grad():
-        for i, (ecg, ppg, record_names) in enumerate(test_loader):
-            ppg_input = ppg.to(DEVICE).float().unsqueeze(1)
-            ecg_input = ecg.to(DEVICE).float().unsqueeze(1)
+        for batch_data in test_loader:
+            ecg = batch_data[0]
+            ppg = batch_data[1]
+            record_names = batch_data[2]
 
-            
-            outputs = model(ppg = ppg_input, ecg = None)
-            predicted_ecg = outputs["recon_ecg"]
-            # _, _, predicted_ecg = model(ecg_input, ppg_input)
+            ppg_input = ppg.float().unsqueeze(1).to(DEVICE) if ppg.dim() == 2 else ppg.float().to(DEVICE)
+
+            predicted_ecg = get_prediction(model, ppg_input)
 
             ppg_np = np.atleast_2d(ppg_input.cpu().squeeze().numpy())
             ecg_true_np = np.atleast_2d(ecg.cpu().squeeze().numpy())
@@ -156,37 +148,31 @@ def run_visualization():
                         ppg_np[idx], 
                         ecg_true_np[idx], 
                         ecg_pred_np[idx], 
-                        len(seen_records), 
                         current_rec_name
                     )
                     seen_records.add(current_rec_name)
+                
+                if len(seen_records) >= 5:
+                    print("Đã hiển thị xong 5 samples demo.")
+                    return
 
 def align_signals(true_s: np.ndarray, pred_s: np.ndarray) -> np.ndarray:
-    """
-    Dùng Cross-Correlation để tìm độ lệch pha và dịch chuyển pred_s cho khớp với true_s.
-    """
-    # Tính tương quan chéo
     correlation = correlate(true_s, pred_s, mode='full')
-    
-    # Tìm chỉ số có độ tương quan cao nhất
-    # Trừ đi (len(pred_s) - 1) để tìm ra độ trễ (lag) thực tế
     lag = np.argmax(correlation) - (len(pred_s) - 1)
     
-    # Tạo mảng mới để chứa tín hiệu đã dịch chuyển
     aligned_pred = np.zeros_like(pred_s)
     
     if lag > 0:
-        # Tín hiệu dự đoán đi nhanh hơn -> dịch sang phải
         aligned_pred[lag:] = pred_s[:-lag]
     elif lag < 0:
-        # Tín hiệu dự đoán đi chậm hơn -> dịch sang trái
         aligned_pred[:lag] = pred_s[-lag:]
     else:
-        # Không lệch
         aligned_pred = pred_s.copy()
         
     return aligned_pred
+
 def run_loss():
+    set_seed(SEED)
     model = load_model()
     
     try:
@@ -196,7 +182,6 @@ def run_loss():
         print(f"Error: {e}")
         return
 
-    # Khởi tạo 2 bộ biến: BEFORE (Trước khi align) và AFTER (Sau khi align)
     metrics = {
         'before': {'rmse': 0, 'pearson': 0, 'dtw': 0, 'cosine': 0},
         'after':  {'rmse': 0, 'pearson': 0, 'dtw': 0, 'cosine': 0}
@@ -205,12 +190,13 @@ def run_loss():
 
     print("Calculating Metrics...")
     with torch.no_grad():
-        for i, (ecg, ppg, record_names) in enumerate(test_loader):
-            ppg_input = ppg.to(DEVICE).float().unsqueeze(1)
-            ecg_input = ecg.to(DEVICE).float().unsqueeze(1)
+        for batch_data in test_loader:
+            ecg = batch_data[0]
+            ppg = batch_data[1]
 
-            outputs = model(ppg = ppg_input, ecg = None)
-            predicted_ecg = outputs["recon_ecg"]
+            ppg_input = ppg.float().unsqueeze(1).to(DEVICE) if ppg.dim() == 2 else ppg.float().to(DEVICE)
+
+            predicted_ecg = get_prediction(model, ppg_input)
 
             ecg_true_np = np.atleast_2d(ecg.cpu().squeeze().numpy())
             ecg_pred_np = np.atleast_2d(predicted_ecg.cpu().squeeze().numpy())
@@ -219,9 +205,6 @@ def run_loss():
                 true_s = ecg_true_np[b]
                 pred_s = ecg_pred_np[b]
 
-                # ---------------------------------------------------------
-                # 1. TÍNH METRICS TRƯỚC KHI SHIFT ALIGNMENT
-                # ---------------------------------------------------------
                 rmse_b, pearson_b = calculate_metrics(true_s, pred_s)
                 dtw_b = calculate_dtw_distance(true_s, pred_s)
                 cosine_b = calculate_cosine_similarity(true_s, pred_s)
@@ -231,14 +214,8 @@ def run_loss():
                 metrics['before']['dtw'] += dtw_b
                 metrics['before']['cosine'] += cosine_b
 
-                # ---------------------------------------------------------
-                # 2. DỊCH CHUYỂN PHA (SHIFT ALIGNMENT)
-                # ---------------------------------------------------------
                 aligned_pred_s = align_signals(true_s, pred_s)
 
-                # ---------------------------------------------------------
-                # 3. TÍNH METRICS SAU KHI SHIFT ALIGNMENT
-                # ---------------------------------------------------------
                 rmse_a, pearson_a = calculate_metrics(true_s, aligned_pred_s)
                 dtw_a = calculate_dtw_distance(true_s, aligned_pred_s)
                 cosine_a = calculate_cosine_similarity(true_s, aligned_pred_s)
@@ -250,57 +227,62 @@ def run_loss():
                 
                 total_samples += 1
 
-    # In kết quả so sánh
-    print(f"\n{'='*40}")
+    print(f"\n{'='*48}")
     print(f"FINAL RESULTS ({total_samples} samples)")
-    print(f"{'='*40}")
-    print(f"{'Metric':<12} | {'Before Align':<12} | {'After Align':<12}")
-    print(f"{'-'*40}")
-    
-    print(f"rRMSE        | {metrics['before']['rmse']/total_samples:<12.4f} | {metrics['after']['rmse']/total_samples:<12.4f}")
-    print(f"Pearson      | {metrics['before']['pearson']/total_samples:<12.4f} | {metrics['after']['pearson']/total_samples:<12.4f}")
-    print(f"DTW          | {metrics['before']['dtw']/total_samples:<12.4f} | {metrics['after']['dtw']/total_samples:<12.4f}")
-    print(f"Cosine       | {metrics['before']['cosine']/total_samples:<12.4f} | {metrics['after']['cosine']/total_samples:<12.4f}")
-    print(f"{'='*40}")
+    print(f"{'='*48}")
+    print(f"{'Metric':<12} | {'Before Align':<15} | {'After Align':<15}")
+    print(f"{'-'*48}")
+    print(f"RMSE         | {metrics['before']['rmse']/total_samples:<15.4f} | {metrics['after']['rmse']/total_samples:<15.4f}")
+    print(f"Pearson      | {metrics['before']['pearson']/total_samples:<15.4f} | {metrics['after']['pearson']/total_samples:<15.4f}")
+    print(f"DTW          | {metrics['before']['dtw']/total_samples:<15.4f} | {metrics['after']['dtw']/total_samples:<15.4f}")
+    print(f"Cosine       | {metrics['before']['cosine']/total_samples:<15.4f} | {metrics['after']['cosine']/total_samples:<15.4f}")
+    print(f"{'='*48}")
 
-def save_ecg_reconstruction_deepbeat(output_path="AF_Detection/ecg_deepbeat_reconstructions.npz"):
+def save_ecg_reconstruction(output_path="AF_Detection/total_mimic_af.npz"):
     set_seed(SEED)
     model = load_model()
     
     all_predicted_ecgs = []
     all_original_ppgs = []
     all_labels = []
+    all_record_names = []
 
     try:
         test_dataset = LoadData(TEST_DATA_PATH)
-        test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=True)
+        test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
     except Exception as e:
         print(f"Error: {e}")
         return
    
-    print("Running inference and saving DeepBeat reconstructions...")
+    print("Running inference and saving reconstructions...")
     with torch.no_grad():
-        for i, (ppg, label) in enumerate(test_loader):
-            ppg_input = ppg.to(DEVICE).float().unsqueeze(1)
-            
-            predicted_ecg = model(None, ppg_input)
+        for batch_data in test_loader:
+            ecg = batch_data[0]
+            ppg = batch_data[1]
+            record_names = batch_data[2]
+            label = batch_data[3] if len(batch_data) > 3 else np.zeros(len(ecg))
+
+            ppg_input = ppg.float().unsqueeze(1).to(DEVICE) if ppg.dim() == 2 else ppg.float().to(DEVICE)
+
+            predicted_ecg = get_prediction(model, ppg_input)
             
             all_predicted_ecgs.append(predicted_ecg.squeeze(1).cpu().numpy())
             all_original_ppgs.append(ppg.cpu().numpy())
-            all_labels.append(label.cpu().numpy())
+            all_labels.append(label.cpu().numpy() if isinstance(label, torch.Tensor) else label)
+            all_record_names.append(record_names)
             
     save_dict = {
         "ecgs": np.concatenate(all_predicted_ecgs, axis=0),
         "ppgs": np.concatenate(all_original_ppgs, axis=0),
         "labels": np.concatenate(all_labels, axis=0),
+        "records": np.concatenate(all_record_names, axis=0) 
     }
     
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     np.savez_compressed(output_path, **save_dict)
-    print(f"Saved DeepBeat reconstructions to {output_path}")
+    print(f"Saved reconstructions to {output_path}")
 
 if __name__ == "__main__":
-    # run_visualization()
-    run_loss()
-    # save_ecg_reconstruction("AF_Detection/total_mimic_af.npz")
-    # save_ecg_reconstruction_deepbeat("AF_Detection/deepbeat_ecg_reconstructions.npz")
+    run_visualization()
+    # run_loss()
+    # save_ecg_reconstruction()

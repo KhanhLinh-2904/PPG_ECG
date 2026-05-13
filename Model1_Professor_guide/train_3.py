@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import random
 from loss import ContrastiveLoss, PearsonLoss, DistributionAlignmentLoss
-from CLIP_3 import ECG_PPG_Fusion_Model
+from Model1_Professor_guide.CLIP_same_encoder import ECG_PPG_Fusion_Model
 from load_data import LoadData
 
 # ==========================================

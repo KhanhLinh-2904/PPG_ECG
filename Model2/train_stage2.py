@@ -16,10 +16,7 @@ from tqdm import tqdm
 from load_data import LoadData
 from ecg2ecg import ECGAutoencoder, ECGAEConfig
 from ppg2ecg import PPG2ECGModel, PPG2ECGConfig
-
-# Đổi import từ CNN sang Transformer
-from flow_model import LatentTransformerFlow
-
+from flow_model import LatentRectifiedFlow
 # ============================================================
 # 1. CẤU HÌNH CHO GIAI ĐOẠN 2 (STAGE 2 CONFIG)
 # ============================================================
@@ -36,14 +33,14 @@ class Stage2TrainConfig:
     ppg_checkpoint_path: str = "/home/linhhima/PPG_ECG/Result_model2/saved_models_alignment_batch_32/best_ppg_alignment.pth"
     
     # Đường dẫn lưu mô hình Stage 2
-    save_dir: str = "saved_models_flow_transformer" # Đổi tên thư mục lưu để tránh ghi đè
+    save_dir: str = "saved_models_flow"
     best_model_name: str = "best_rectified_flow.pth"
 
     # Training Params cho Rectified Flow
-    batch_size: int = 256  
+    batch_size: int = 128  # Giữ nguyên batch size 256 như bạn yêu cầu
     epochs: int = 300
     num_workers: int = 4
-    lr: float = 2e-4       
+    lr: float = 2e-4       # Learning rate cho Flow
     weight_decay: float = 1e-4
     grad_clip: float = 1.0
     use_amp: bool = True
@@ -56,14 +53,15 @@ class Stage2TrainConfig:
     dims: tuple = (64, 128, 256, 512)
     depths: tuple = (2, 2, 4, 2)
     
-    # Kiến trúc Transformer Flow Model (Mới thêm)
-    embed_dim: int = 256
-    num_heads: int = 8
-    num_layers: int = 6
+    # Kiến trúc Flow Model
+    flow_hidden_dim: int = 128
+    flow_num_blocks: int = 6
 
 CFG = Stage2TrainConfig()
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 os.makedirs(CFG.save_dir, exist_ok=True)
+
+
 
 # ============================================================
 # 3. UTILS & DATA LOADER
@@ -92,7 +90,7 @@ def get_dataloaders():
 def load_frozen_stage1():
     print("[*] Đang tải và đóng băng các mô hình Stage 1 (ECG Teacher & PPG Encoder)...")
     
-    # Khởi tạo Config 
+    # Khởi tạo Config (Chỉ lấy phần cấu hình cơ bản, bỏ qua tham số loss)
     ecg_cfg = ECGAEConfig(
         input_length=CFG.input_length, in_channels=1, dims=CFG.dims, depths=CFG.depths,
         latent_channels=CFG.latent_channels, latent_length=CFG.latent_length,
@@ -141,7 +139,7 @@ def train_one_epoch(flow_model, ecg_ae, ppg_model, optimizer, scaler, dataloader
         with torch.no_grad():
             feat_ecg = ecg_ae.encoder(ecg)
             z_ecg = ecg_ae.latent_head(feat_ecg)   # Target
-            
+           
             feat_ppg = ppg_model.ppg_encoder(ppg)
             z_ppg = ppg_model.ppg_latent_head(feat_ppg) # Condition
 
@@ -162,9 +160,8 @@ def train_one_epoch(flow_model, ecg_ae, ppg_model, optimizer, scaler, dataloader
         optimizer.zero_grad(set_to_none=True)
 
         with autocast(enabled=CFG.use_amp):
-            # Dự đoán trường vector v bằng Transformer
+            # Dự đoán trường vector v
             v_pred = flow_model(xt, t, z_ppg)
-            
             # Hàm mất mát MSE
             loss = F.mse_loss(v_pred, v_target)
 
@@ -192,6 +189,7 @@ def val_one_epoch(flow_model, ecg_ae, ppg_model, dataloader):
 
         feat_ecg = ecg_ae.encoder(ecg)
         z_ecg = ecg_ae.latent_head(feat_ecg)
+
         feat_ppg = ppg_model.ppg_encoder(ppg)
         z_ppg = ppg_model.ppg_latent_head(feat_ppg)
 
@@ -222,13 +220,12 @@ def main():
     # 2. Load Frozen Stage 1
     ecg_ae, ppg_model = load_frozen_stage1()
 
-    # 3. Khởi tạo Mô hình Transformer Flow (Stage 2)
-    flow_model = LatentTransformerFlow(
+    # 3. Khởi tạo Mô hình Flow (Stage 2)
+    flow_model = LatentRectifiedFlow(
         latent_channels=CFG.latent_channels, 
-        latent_length=CFG.latent_length,
-        embed_dim=CFG.embed_dim,
-        num_heads=CFG.num_heads,
-        num_layers=CFG.num_layers
+        cond_channels=CFG.latent_channels, 
+        hidden_dim=CFG.flow_hidden_dim, 
+        num_blocks=CFG.flow_num_blocks
     ).to(DEVICE)
 
     # 4. Optimizer & Scheduler
@@ -241,7 +238,7 @@ def main():
     save_path = os.path.join(CFG.save_dir, CFG.best_model_name)
 
     print("\n" + "="*50)
-    print("[*] BẮT ĐẦU HUẤN LUYỆN GIAI ĐOẠN 2: LATENT TRANSFORMER FLOW")
+    print("[*] BẮT ĐẦU HUẤN LUYỆN GIAI ĐOẠN 2: LATENT RECTIFIED FLOW")
     print("="*50 + "\n")
 
     for epoch in range(1, CFG.epochs + 1):
@@ -258,7 +255,7 @@ def main():
             best_val_loss = val_mse
             bad_epochs = 0
             torch.save(flow_model.state_dict(), save_path)
-            print(f"   [+] Đã lưu mô hình Transformer Flow tốt nhất (Val MSE giảm xuống {best_val_loss:.5f})!")
+            print(f"   [+] Đã lưu mô hình Flow tốt nhất (Val MSE giảm xuống {best_val_loss:.5f})!")
         else:
             bad_epochs += 1
             print(f"   [-] Loss Val không cải thiện trong {bad_epochs} epoch(s).")

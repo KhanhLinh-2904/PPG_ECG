@@ -17,9 +17,7 @@ from matplotlib.patches import Patch
 from load_data import LoadData 
 from ecg2ecg import ECGAutoencoder, ECGAEConfig
 from ppg2ecg import PPG2ECGModel, PPG2ECGConfig 
-
-# [THAY ĐỔI 1]: Import mô hình Transformer thay vì CNN
-from flow_model import LatentTransformerFlow 
+from flow_model import LatentRectifiedFlow # Đảm bảo bạn có file chứa class này
 
 # ==========================================
 # CẤU HÌNH (CONFIGURATIONS)
@@ -28,22 +26,15 @@ SEED = 40
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 BATCH_SIZE = 64
 INPUT_LENGTH = 2400
-TEST_DATA_PATH = '/home/linhhima/Diffusion datasets/train.npz'
+TEST_DATA_PATH = '/home/linhhima/PPG_ECG/datasets/z_score_norm/total_mimic_af.npz'
 
 # Đường dẫn trọng số
 PHASE1_ECG_PATH = '/home/linhhima/PPG_ECG/Result_model2/saved_models_ecg_vae/best_ecg_autoencoder.pth'
 PHASE1_PPG_PATH = '/home/linhhima/PPG_ECG/Result_model2/saved_models_alignment_batch_32/best_ppg_alignment.pth'
-
-# [THAY ĐỔI 2]: Đảm bảo đường dẫn này trỏ tới file weights của Transformer
-PHASE2_FLOW_PATH = '/home/linhhima/PPG_ECG/saved_models_flow_transformer/best_rectified_flow.pth' 
+PHASE2_FLOW_PATH = '/home/linhhima/PPG_ECG/saved_models_flow_128/best_rectified_flow.pth' # Đường dẫn mô hình Flow
 
 NUM_SAMPLES_TO_VISUALIZE = 2400
 ODE_STEPS = 10 # Số bước giải Euler cho Rectified Flow
-
-# [THAY ĐỔI 3]: Khai báo tham số cấu hình cho Transformer
-TRANSFORMER_EMBED_DIM = 256
-TRANSFORMER_NUM_HEADS = 8
-TRANSFORMER_NUM_LAYERS = 6
 
 def set_seed(seed):
     random.seed(seed)
@@ -77,16 +68,8 @@ def load_models():
     ppg_model.eval()
     for p in ppg_model.parameters(): p.requires_grad = False
 
-    # 3. Load Stage 2 Latent Transformer Flow
-    # [THAY ĐỔI 4]: Khởi tạo bằng LatentTransformerFlow
-    flow_model = LatentTransformerFlow(
-        latent_channels=16, 
-        latent_length=75,
-        embed_dim=TRANSFORMER_EMBED_DIM,
-        num_heads=TRANSFORMER_NUM_HEADS,
-        num_layers=TRANSFORMER_NUM_LAYERS
-    ).to(DEVICE)
-    
+    # 3. Load Stage 2 Latent Rectified Flow
+    flow_model = LatentRectifiedFlow(latent_channels=16, cond_channels=16, hidden_dim=128, num_blocks=6).to(DEVICE)
     flow_model.load_state_dict(torch.load(PHASE2_FLOW_PATH, map_location=DEVICE))
     flow_model.eval()
     for p in flow_model.parameters(): p.requires_grad = False
@@ -97,6 +80,7 @@ def euler_solve(flow_model, z_ppg, num_steps=10):
     """ Hàm giải ODE sinh predicted_ecg_latent từ z_ppg """
     B, C, L = z_ppg.shape
     xt = torch.randn((B, C, L), device=DEVICE) # x_0 ~ N(0, I)
+    # xt = z_ppg.clone() 
     dt = 1.0 / num_steps
     
     for step in range(num_steps):
@@ -136,12 +120,13 @@ def run_stage2_testing():
         # 1. Trích xuất Ground Truth ECG Latent
         feat_ecg = ecg_ae.encoder(ecg)
         z_ecg = ecg_ae.latent_head(feat_ecg)
+
         
         # 2. Trích xuất PPG Latent (Condition)
         feat_ppg = ppg_model.ppg_encoder(ppg)
         z_ppg = ppg_model.ppg_latent_head(feat_ppg)
         
-        # 3. Sinh Predicted ECG Latent bằng Transformer Rectified Flow
+        # 3. Sinh Predicted ECG Latent bằng Rectified Flow
         z_ecg_hat = euler_solve(flow_model, z_ppg, num_steps=ODE_STEPS)
         
         # 4. Tái tạo tín hiệu ECG từ Predicted Latent
