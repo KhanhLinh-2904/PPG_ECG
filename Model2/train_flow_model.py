@@ -25,12 +25,12 @@ class Stage2TrainConfig:
     seed: int = 42
     
     # Data paths
-    train_path: str = "/home/linhhima/Diffusion datasets/train.npz"
-    val_path: str = "/home/linhhima/Diffusion datasets/val.npz"
+    train_path: str = "/home/linhhima/Diffusion datasets/combined_segment_split_train.npz"
+    val_path: str = "/home/linhhima/Diffusion datasets/combined_segment_split_val.npz"
 
     # Trọng số của Stage 1 (Phải chạy xong Giai đoạn 1 mới có)
-    ecg_checkpoint_path: str = "/home/linhhima/PPG_ECG/Result_model2/saved_models_ecg_vae/best_ecg_autoencoder.pth" 
-    ppg_checkpoint_path: str = "/home/linhhima/PPG_ECG/Result_model2/saved_models_alignment_batch_32/best_ppg_alignment.pth"
+    ecg_checkpoint_path: str = "/home/linhhima/PPG_ECG/saved_models_ecg_vae/best_ecg_autoencoder.pth" 
+    ppg_checkpoint_path: str = "/home/linhhima/PPG_ECG/saved_models_alignment/best_ppg_alignment.pth"
     
     # Đường dẫn lưu mô hình Stage 2
     save_dir: str = "saved_models_flow"

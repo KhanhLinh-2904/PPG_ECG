@@ -113,7 +113,7 @@ def run_single_complex_evaluation():
     seen_records = set() # Set dùng để theo dõi các record đã vẽ
     
     # CỜ KIỂM SOÁT ĐỒ THỊ (Để False nếu chỉ muốn lấy điểm trung bình nhanh)
-    SHOW_PLOTS = True 
+    SHOW_PLOTS = True
     
     # Các biến cộng dồn để tính trung bình
     total_rmse = 0.0

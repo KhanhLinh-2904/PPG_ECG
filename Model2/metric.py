@@ -65,11 +65,3 @@ def calculate_cosine_similarity(y_true, y_pred):
         
     return dot_product / (norm_t * norm_p)
 
-if __name__ == "__main__":
-    y_test = [0.1, 0.2, 0.5, 1.2, 0.5, 0.2, 0.1]
-    y_hat  = [0.12, 0.18, 0.48, 1.15, 0.52, 0.21, 0.09]
-
-    rrmse_val, rho_val = calculate_metrics(y_test, y_hat)
-
-    print(f"rRMSE: {rrmse_val:.4f}")
-    print(f"Pearson Correlation (rho): {rho_val:.4f}")

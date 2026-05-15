@@ -19,8 +19,8 @@ from ecg2ecg import ECGAutoencoder, ECGAEConfig, ECGReconstructionLoss
 class TrainConfig:
     seed: int = 42
 
-    train_path: str = "/home/linhhima/Diffusion datasets/train.npz"
-    val_path: str = "/home/linhhima/Diffusion datasets/val.npz"
+    train_path: str = "/home/linhhima/Diffusion datasets/combined_segment_split_train.npz"
+    val_path: str = "/home/linhhima/Diffusion datasets/combined_segment_split_val.npz"
 
     # Chỉ dùng 1 file lưu model duy nhất
     save_dir: str = "saved_models_ecg_vae"

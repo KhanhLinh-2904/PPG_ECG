@@ -420,5 +420,5 @@ class CardioAlignLoss(nn.Module):
             "loss_total": loss_total,
             "loss_coral": loss_coral,
             "loss_kl": loss_kl,
-            "loss_pair": loss_pair,  # Trả về để ghi log trong file train
+            "loss_pair": loss_pair,  
         }

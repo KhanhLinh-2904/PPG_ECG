@@ -21,15 +21,15 @@ from ppg2ecg import PPG2ECGModel, PPG2ECGConfig, CardioAlignLoss
 class TrainConfig:
     seed: int = 42
     
-    train_path: str = "/home/linhhima/Diffusion datasets/train.npz"
-    val_path: str = "/home/linhhima/Diffusion datasets/val.npz"
+    train_path: str = "/home/linhhima/Diffusion datasets/combined_segment_split_train.npz"
+    val_path: str = "/home/linhhima/Diffusion datasets/combined_segment_split_val.npz"
 
-    ecg_checkpoint_path: str = "saved_models_ecg_vae/best_ecg_autoencoder.pth" 
+    ecg_checkpoint_path: str = "/home/linhhima/PPG_ECG/saved_models_ecg_vae/best_ecg_autoencoder.pth" 
     save_dir: str = "saved_models_alignment"
     best_model_name: str = "best_ppg_alignment.pth"
 
     # Training Params
-    batch_size: int = 256
+    batch_size: int = 32
     epochs: int = 200
     num_workers: int = 4
     lr: float = 1e-4

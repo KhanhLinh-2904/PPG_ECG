@@ -8,7 +8,7 @@ import random
 import os
 
 from scipy.signal import correlate
-
+from scipy.signal import butter, filtfilt, find_peaks
 from load_data import LoadData 
 from ecg2ecg import ECGAutoencoder, ECGAEConfig
 from ppg2ecg import PPG2ECGModel, PPG2ECGConfig 
@@ -27,9 +27,9 @@ INPUT_LENGTH = 2400
 TEST_DATA_PATH = '/home/linhhima/PPG_ECG/datasets/z_score_norm/total_mimic_af.npz'
 
 # Đường dẫn trọng số (Hãy đảm bảo đường dẫn chính xác)
-PHASE1_ECG_PATH = '/home/linhhima/PPG_ECG/Result_model2/saved_models_ecg_vae/best_ecg_autoencoder.pth'
-PHASE1_PPG_PATH = '/home/linhhima/PPG_ECG/Result_model2/saved_models_alignment_batch_32/best_ppg_alignment.pth'
-PHASE2_FLOW_PATH = '/home/linhhima/PPG_ECG/saved_models_flow_cfg/best_rectified_flow_cfg.pth'
+PHASE1_ECG_PATH = '/home/linhhima/PPG_ECG/Result_model2_subjects/saved_models_ecg_vae/best_ecg_autoencoder.pth'
+PHASE1_PPG_PATH = '/home/linhhima/PPG_ECG/Result_model2_subjects/saved_models_alignment/best_ppg_alignment.pth'
+PHASE2_FLOW_PATH = '/home/linhhima/PPG_ECG/Result_model2_subjects/saved_models_flow/best_rectified_flow.pth'
 
 ODE_STEPS = 10 # Số bước giải Euler cho Rectified Flow
 
@@ -42,6 +42,124 @@ def set_seed(seed):
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+
+def calculate_rr_intervals(r_peaks: np.ndarray, fs: int = 125):
+    """
+    Tính khoảng cách R-R trung bình, Nhịp tim (BPM) và SDNN.
+    
+    Tham số:
+    - r_peaks: Mảng numpy chứa vị trí (index) của các đỉnh R.
+    - fs: Tần số lấy mẫu (Sampling rate), mặc định là 125 Hz.
+    
+    Trả về:
+    - avg_rr_ms: Khoảng cách R-R trung bình (mili-giây).
+    - hr_bpm: Nhịp tim trung bình (Nhịp/phút).
+    - sdnn_ms: Độ lệch chuẩn của các khoảng R-R (mili-giây) - Đại diện cho biến thiên nhịp tim.
+    """
+    # Cần ít nhất 2 đỉnh để tạo thành 1 khoảng R-R
+    if len(r_peaks) < 2:
+        return 0.0, 0.0, 0.0
+    
+    # Tính khoảng cách giữa các đỉnh liên tiếp (đơn vị: số lượng mẫu)
+    rr_intervals_samples = np.diff(r_peaks)
+    
+    # Chuyển đổi từ số lượng mẫu sang mili-giây (ms)
+    # Công thức: (số mẫu / tần số lấy mẫu) * 1000
+    rr_intervals_ms = (rr_intervals_samples / fs) * 1000.0
+    
+    # 1. Trung bình khoảng cách R-R
+    avg_rr_ms = np.mean(rr_intervals_ms)
+    
+    # 2. Nhịp tim trung bình (BPM: Beats Per Minute)
+    # 60,000 mili-giây = 1 phút
+    hr_bpm = 60000.0 / avg_rr_ms if avg_rr_ms > 0 else 0.0
+    
+    # 3. SDNN (Standard Deviation of NN intervals) - Thước đo HRV
+    sdnn_ms = np.std(rr_intervals_ms)
+    
+    return avg_rr_ms, hr_bpm, sdnn_ms
+
+def pan_tompkins_qrs(ecg_signal: np.ndarray, fs: int = 125, external_threshold: float = None, return_threshold: bool = False):
+    """
+    Thuật toán Pan-Tompkins đã chỉnh sửa để nhận/trả ngưỡng.
+    """
+    ecg_signal = np.array(ecg_signal).flatten()
+    
+    # 1. Bộ lọc dải thông (Bandpass Filter: 5 - 15 Hz)
+    nyq = 0.5 * fs
+    low = 5.0 / nyq
+    high = 15.0 / nyq
+    b, a = butter(1, [low, high], btype='band')
+    filtered_ecg = filtfilt(b, a, ecg_signal)
+    
+    # 2. Đạo hàm (Derivative)
+    diff_ecg = np.diff(filtered_ecg)
+    diff_ecg = np.insert(diff_ecg, 0, diff_ecg[0])
+    
+    # 3. Bình phương (Squaring function)
+    squared_ecg = diff_ecg ** 2
+    
+    # 4. Tích phân cửa sổ trượt (Moving Window Integration)
+    window_width = int(0.15 * fs)
+    integrated_ecg = np.convolve(squared_ecg, np.ones(window_width) / window_width, mode='same')
+    
+    # 5. THRESHOLDING (Khúc này đã được sửa)
+    # Nếu có truyền ngưỡng từ ngoài vào thì dùng nó, nếu không thì tự tính trung bình
+    if external_threshold is not None:
+        threshold = external_threshold
+    else:
+        threshold = np.mean(integrated_ecg)
+        
+    min_distance = int(0.3 * fs)
+    peaks_integrated, _ = find_peaks(integrated_ecg, height=threshold, distance=min_distance)
+    
+    # 6. Đối chiếu lại để tìm chính xác đỉnh R trên tín hiệu gốc (Back-search)
+    r_peaks = []
+    search_window = int(0.05 * fs) 
+    
+    for p in peaks_integrated:
+        start = max(0, p - search_window)
+        end = min(len(ecg_signal), p + search_window)
+        if start < end:
+            local_max = np.argmax(ecg_signal[start:end])
+            r_peaks.append(start + local_max)
+            
+    # Trả về cả đỉnh R và cái ngưỡng đã dùng (nếu được yêu cầu)
+    if return_threshold:
+        return np.array(r_peaks), threshold
+    
+    return np.array(r_peaks)
+
+def calculate_peak_count_ratio(true_s: np.ndarray, pred_s: np.ndarray, sampling_rate=125):
+    """
+    Đếm số lượng đỉnh R bằng thuật toán Pan-Tompkins và tính tỷ lệ.
+    ĐÃ SỬA: Ép Predicted ECG phải dùng ngưỡng tính được từ Ground Truth.
+    """
+    # 1. Tìm đỉnh R của Ground Truth và TRÍCH XUẤT NGƯỠNG (gt_threshold)
+    true_peaks, gt_threshold = pan_tompkins_qrs(true_s, fs=sampling_rate, return_threshold=True)
+    
+    # 2. Truyền ngưỡng của Ground Truth cho Predicted ECG
+    pred_peaks = pan_tompkins_qrs(pred_s, fs=sampling_rate, external_threshold=gt_threshold, return_threshold=False)
+    
+    # 3. Đếm tổng số đỉnh
+    num_true = len(true_peaks)
+    num_pred = len(pred_peaks)
+
+    # true_avg_rr, true_hr, true_sdnn = calculate_rr_intervals(true_peaks, fs=125)
+    # pred_avg_rr, pred_hr, pred_sdnn = calculate_rr_intervals(pred_peaks, fs=125)
+
+    # # In ra để kiểm tra ngay lập tức cho Record hiện tại
+    # print(f"  GT   -> RR: {true_avg_rr:.1f} ms | HR: {true_hr:.1f} bpm | SDNN: {true_sdnn:.1f} ms")
+    # print(f"  Pred -> RR: {pred_avg_rr:.1f} ms | HR: {pred_hr:.1f} bpm | SDNN: {pred_sdnn:.1f} ms")
+    # print("-" * 50)
+    
+    # 4. Tính tỷ lệ dự đoán so với thực tế (Prediction Ratio)
+    if num_true > 0:
+        ratio = num_pred / num_true
+    else:
+        ratio = 1.0 if num_pred == 0 else 0.0
+        
+    return num_true, num_pred, ratio
 
 def load_models():
     print(f"[*] Loading Models on {DEVICE}...")
@@ -81,8 +199,7 @@ def load_models():
 def euler_solve(flow_model, z_ppg, num_steps=10):
     """ Hàm giải ODE sinh predicted_ecg_latent từ z_ppg """
     B, C, L = z_ppg.shape
-    # xt = torch.randn((B, C, L), device=DEVICE) # x_0 ~ N(0, I)
-    xt = z_ppg.clone() 
+    xt = torch.randn((B, C, L), device=DEVICE) 
     dt = 1.0 / num_steps
     
     for step in range(num_steps):
@@ -91,45 +208,33 @@ def euler_solve(flow_model, z_ppg, num_steps=10):
         v_pred = flow_model(xt, t_tensor, z_ppg)
         xt = xt + v_pred * dt
         
-    return xt # Chính là predicted_ecg_latent (z_ecg_hat)
+    return xt
 
 def align_signals(true_s: np.ndarray, pred_s: np.ndarray) -> np.ndarray:
     """ 
     Tìm độ lệch pha và dịch chuyển pred_s cho khớp với true_s bằng Cross-Correlation.
-    Lấp đầy phần bị hụt (padding) bằng chính giá trị biên của tín hiệu (Edge Padding) 
-    thay vì dùng số 0.
     """
     correlation = correlate(true_s, pred_s, mode='full')
     lag = np.argmax(correlation) - (len(pred_s) - 1)
     
-    # Khởi tạo một mảng trống (chưa có giá trị)
     aligned_pred = np.empty_like(pred_s) 
     
     if lag > 0:
-        # Tín hiệu pred_s trễ hơn, bị dịch sang phải
         aligned_pred[lag:] = pred_s[:-lag]
-        
-        # Padding phần hụt ở bên trái (từ 0 đến lag) bằng giá trị ĐẦU TIÊN của tín hiệu bị dịch
         edge_value = pred_s[0]
         aligned_pred[:lag] = edge_value
-        
     elif lag < 0:
-        # Tín hiệu pred_s sớm hơn, bị dịch sang trái
         lag = abs(lag)
         aligned_pred[:-lag] = pred_s[lag:]
-        
-        # Padding phần hụt ở bên phải (từ cuối - lag đến cuối) bằng giá trị CUỐI CÙNG của tín hiệu
         edge_value = pred_s[-1]
         aligned_pred[-lag:] = edge_value
-        
     else:
-        # Không có độ trễ
         aligned_pred = pred_s.copy()
         
     return aligned_pred
 
 # ==========================================
-# CÁC CHỨC NĂNG CHÍNH (VISUALIZE, LOSS, SAVE)
+# CÁC CHỨC NĂNG CHÍNH (VISUALIZE, LOSS, SAVE, EVAL)
 # ==========================================
 
 def run_visualization():
@@ -138,7 +243,6 @@ def run_visualization():
 
     try:
         dataset = LoadData(TEST_DATA_PATH)
-        # Sử dụng shuffle=False để đi qua các bản ghi theo thứ tự trong file
         dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False)
     except Exception as e:
         print(f"Error loading data: {e}")
@@ -152,17 +256,11 @@ def run_visualization():
             ppg = batch_data[1].float().unsqueeze(1).to(DEVICE) if batch_data[1].dim() == 2 else batch_data[1].float().to(DEVICE)
             record_names = batch_data[2] if len(batch_data) > 2 else [f"Record_{i}" for i in range(ecg.shape[0])]
 
-            # 1. Trích xuất PPG Latent (Condition)
             feat_ppg = ppg_model.ppg_encoder(ppg)
             z_ppg = ppg_model.ppg_latent_head(feat_ppg)
-            
-            # 2. Sinh Predicted ECG Latent bằng Rectified Flow
             z_ecg_hat = euler_solve(flow_model, z_ppg, num_steps=ODE_STEPS)
-            
-            # 3. Đưa vào ecg_decoder (freeze) để tái tạo sóng ECG
             predicted_ecg = ecg_ae.decoder(z_ecg_hat)
-            # predicted_ecg = align_signals(ecg, predicted_ecg)
-            # Hiển thị từng mẫu trong batch
+
             for i in range(ppg.shape[0]):
                 ppg_plot = ppg[i].squeeze().cpu().numpy()
                 ecg_gt_plot = ecg[i].squeeze().cpu().numpy()
@@ -190,7 +288,7 @@ def run_visualization():
                 plt.legend(loc='upper right')
                 
                 plt.tight_layout()
-                plt.show() # Tạm dừng thực thi, đóng cửa sổ để xem ảnh tiếp theo
+                plt.show() 
 
 def run_loss():
     set_seed(SEED)
@@ -215,12 +313,9 @@ def run_loss():
             ecg = batch_data[0].float().unsqueeze(1).to(DEVICE) if batch_data[0].dim() == 2 else batch_data[0].float().to(DEVICE)
             ppg = batch_data[1].float().unsqueeze(1).to(DEVICE) if batch_data[1].dim() == 2 else batch_data[1].float().to(DEVICE)
 
-            # Trích xuất PPG Latent và giải ODE
             feat_ppg = ppg_model.ppg_encoder(ppg)
             z_ppg = ppg_model.ppg_latent_head(feat_ppg)
             z_ecg_hat = euler_solve(flow_model, z_ppg, num_steps=ODE_STEPS)
-            
-            # Tái tạo ECG
             predicted_ecg = ecg_ae.decoder(z_ecg_hat)
 
             ecg_true_np = np.atleast_2d(ecg.cpu().squeeze().numpy())
@@ -239,7 +334,6 @@ def run_loss():
                 metrics['before']['dtw'] += dtw_b
                 metrics['before']['cosine'] += cosine_b
 
-                # Align phase
                 aligned_pred_s = align_signals(true_s, pred_s)
 
                 rmse_a, pearson_a = calculate_metrics(true_s, aligned_pred_s)
@@ -290,12 +384,10 @@ def save_ecg_reconstruction(output_path="AF_Detection/ecg_reconstructions.npz"):
 
             ppg_input = ppg.to(DEVICE).float().unsqueeze(1) if ppg.dim() == 2 else ppg.float().to(DEVICE)
             
-            # Trích xuất PPG Latent và giải ODE
             feat_ppg = ppg_model.ppg_encoder(ppg_input)
             z_ppg = ppg_model.ppg_latent_head(feat_ppg)
             z_ecg_hat = euler_solve(flow_model, z_ppg, num_steps=ODE_STEPS)
             
-            # Tái tạo ECG
             predicted_ecg = ecg_ae.decoder(z_ecg_hat)
             
             all_predicted_ecgs.append(predicted_ecg.squeeze(1).cpu().numpy())
@@ -314,9 +406,67 @@ def save_ecg_reconstruction(output_path="AF_Detection/ecg_reconstructions.npz"):
     np.savez_compressed(output_path, **save_dict)
     print(f"[+] Saved reconstructions successfully to {output_path}")
 
+def run_peak_count_evaluation():
+    set_seed(SEED)
+    ecg_ae, ppg_model, flow_model = load_models()
+    
+    try:
+        test_dataset = LoadData(TEST_DATA_PATH)
+        test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
+    except Exception as e:
+        print(f"Error: {e}")
+        return
+
+    total_true_peaks = 0
+    total_pred_peaks = 0
+    total_ratio = 0.0
+    total_samples = 0
+
+    print("[*] Đang đếm số lượng đỉnh R...")
+    print("[!] CẢNH BÁO: Đang ép Predicted ECG dùng chung ngưỡng với Ground Truth!")
+    
+    with torch.no_grad():
+        for batch_data in tqdm(test_loader, desc="Counting R-Peaks"):
+            ecg = batch_data[0].float().unsqueeze(1).to(DEVICE) if batch_data[0].dim() == 2 else batch_data[0].float().to(DEVICE)
+            ppg = batch_data[1].float().unsqueeze(1).to(DEVICE) if batch_data[1].dim() == 2 else batch_data[1].float().to(DEVICE)
+
+            feat_ppg = ppg_model.ppg_encoder(ppg)
+            z_ppg = ppg_model.ppg_latent_head(feat_ppg)
+            z_ecg_hat = euler_solve(flow_model, z_ppg, num_steps=ODE_STEPS)
+            predicted_ecg = ecg_ae.decoder(z_ecg_hat)
+
+            ecg_true_np = np.atleast_2d(ecg.cpu().squeeze().numpy())
+            ecg_pred_np = np.atleast_2d(predicted_ecg.cpu().squeeze().numpy())
+
+            for b in range(ecg_true_np.shape[0]):
+                true_s = ecg_true_np[b]
+                pred_s = ecg_pred_np[b]
+
+                num_true, num_pred, ratio = calculate_peak_count_ratio(true_s, pred_s, sampling_rate=125)
+                
+                total_true_peaks += num_true
+                total_pred_peaks += num_pred
+                total_ratio += ratio
+                total_samples += 1
+
+    # Tính toán kết quả trung bình
+    avg_ratio = total_ratio / total_samples if total_samples > 0 else 0
+    
+    mae_peaks = abs(total_true_peaks - total_pred_peaks) / total_samples if total_samples > 0 else 0
+
+    print(f"\n{'='*50}")
+    print(f"BÁO CÁO SỐ LƯỢNG ĐỈNH R ({total_samples} samples)")
+    print(f"{'='*50}")
+    print(f"Tổng số đỉnh R thực tế (Ground Truth) : {total_true_peaks}")
+    print(f"Tổng số đỉnh R mô hình sinh ra (Pred) : {total_pred_peaks}")
+    print(f"Tỷ lệ số đỉnh trung bình (Pred/True)  : {avg_ratio * 100:.2f} %")
+    print(f"Sai lệch trung bình trên mỗi tín hiệu : {mae_peaks:.2f} đỉnh/tín hiệu")
+    print(f"{'='*50}")
+
 if __name__ == "__main__":
     # CHỌN 1 TRONG 3 HÀM ĐỂ CHẠY (Bỏ comment để sử dụng):
     
     # run_visualization()
     # run_loss()
     save_ecg_reconstruction("/home/linhhima/PPG_ECG/AF_Detection/total_mimic_af_recon.npz")
+    # run_peak_count_evaluation()

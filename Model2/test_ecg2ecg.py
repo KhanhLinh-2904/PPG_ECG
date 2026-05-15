@@ -19,7 +19,7 @@ BATCH_SIZE = 64
 SEQ_LENGTH = 2400
 
 # Đường dẫn data test và trọng số model
-TEST_DATA_PATH = '/home/linhhima/Diffusion datasets/test.npz'
+TEST_DATA_PATH = '/home/linhhima/Diffusion datasets/combined_segment_split_test.npz'
 MODEL_PATH = '/home/linhhima/PPG_ECG/saved_models_ecg_vae/best_ecg_autoencoder.pth'
 
 # ==========================================
@@ -228,5 +228,5 @@ def run_loss():
 
 if __name__ == "__main__":
     
-    # run_visualization()
-    run_loss()
+    run_visualization()
+    # run_loss()

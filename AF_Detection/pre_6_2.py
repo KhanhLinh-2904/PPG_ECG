@@ -50,7 +50,7 @@ def pan_tompkins_qrs(ecg_signal: np.ndarray, fs: int = 125):
     return np.array(r_peaks)
 
 # =====================================================================
-# 2. PHÂN TÍCH VÙNG SÓNG P & LƯU TỌA ĐỘ ĐỈNH P
+# 2. PHÂN TÍCH VÙNG SÓNG P & LƯU TỌA ĐỘ ĐỈNH P (CHỈ TÍNH ENERGY NẾU CÓ ĐỈNH P)
 # =====================================================================
 def analyze_p_wave_for_af(signal, fs=125):
     r_indices = pan_tompkins_qrs(signal, fs)
@@ -87,32 +87,38 @@ def analyze_p_wave_for_af(signal, fs=125):
             
             # --- TÌM SÓNG P ---
             peaks, _ = find_peaks(p_detrended, prominence=0.5)
+            
+            # --- FIX: CHỈ TÍNH NĂNG LƯỢNG KHI CÓ SÓNG P ĐƯỢC TÌM THẤY ---
             if len(peaks) > 0:
                 num_p_found += 1
+                
+                # Lưu tọa độ P-peak
                 peak_idx_local = peaks[np.argmax(p_detrended[peaks])]
                 abs_p_peak = start_idx + peak_idx_local
                 p_peaks_indices.append(abs_p_peak)
                 
-            # --- FFT NĂNG LƯỢNG ---
-            windowed = p_detrended * np.hamming(len(p_detrended))
-            N = len(windowed)
-            freqs = fftfreq(N, 1/fs)[:N//2]
-            energy = np.abs(fft(windowed))[:N//2] ** 2
-            
-            power_1_3Hz = np.sum(energy[(freqs >= 1.0) & (freqs < 3.0)])
-            power_3_10Hz = np.sum(energy[(freqs >= 3.0)])
-            
-            total_power_1_3 += power_1_3Hz
-            total_power_3_10 += power_3_10Hz
+                # --- FFT NĂNG LƯỢNG (Dịch vào trong khối IF) ---
+                windowed = p_detrended * np.hamming(len(p_detrended))
+                N = len(windowed)
+                freqs = fftfreq(N, 1/fs)[:N//2]
+                energy = np.abs(fft(windowed))[:N//2] ** 2
+                
+                power_1_3Hz = np.sum(energy[(freqs >= 1.0) & (freqs < 3.0)])
+                power_3_10Hz = np.sum(energy[(freqs >= 3.0)])
+                
+                energy_ratio = (power_3_10Hz / power_1_3Hz) if power_1_3Hz > 0 else 0.0
+                total_power_1_3 += power_1_3Hz
+                total_power_3_10 += power_3_10Hz
 
     # Số lượng nhịp thực tế được đưa vào phân tích (trừ đi nhịp đầu tiên)
     valid_beats = len(r_indices) - 1
     p_ratio = num_p_found / valid_beats if valid_beats > 0 else 0
     
+    # Tính tỷ lệ năng lượng (Chỉ dựa trên các nhịp có sóng P)
     if total_power_1_3 == 0: 
         total_power_1_3 = 1e-6 
         
-    avg_energy_ratio = (total_power_3_10 / total_power_1_3) if valid_beats > 0 else 0.0
+    avg_energy_ratio = (total_power_3_10 / total_power_1_3) if num_p_found > 0 else 0.0
     
     return p_ratio, avg_energy_ratio, p_peaks_indices, r_indices
 
@@ -151,17 +157,10 @@ def run_pure_p_wave_classification(dataset_path, num_plots_to_show=5, filter_vie
 
         p_ratio, energy_ratio, p_peaks_idx, r_idx = analyze_p_wave_for_af(sig, fs=125)
         
-        
         if p_ratio > P_RATIO_THRESH:
             pred_lbl = 0 # Non-AF
         else:
             pred_lbl = 1 # AF
-      
-        # LUẬT CHẨN ĐOÁN
-        # if energy_ratio > ENERGY_THRESH or p_ratio < P_RATIO_THRESH:
-        #     pred_lbl = 1 # AF
-        # else:
-        #     pred_lbl = 0 # Non-AF
             
         # Thống kê
         if true_lbl == 1:
@@ -174,7 +173,6 @@ def run_pure_p_wave_classification(dataset_path, num_plots_to_show=5, filter_vie
         # =====================================================================
         # KHỐI LỆNH MỚI: VẼ ĐỒ THỊ HIỂN THỊ ĐỈNH P VÀ R
         # =====================================================================
-        # Bộ lọc kiểm tra xem có được phép vẽ đồ thị này không
         show_this_plot = False
         if filter_view == "all":
             show_this_plot = True
@@ -198,13 +196,11 @@ def run_pure_p_wave_classification(dataset_path, num_plots_to_show=5, filter_vie
                 p_peaks_arr = np.array(p_peaks_idx)
                 ax.scatter(p_peaks_arr/125, sig[p_peaks_arr], color='limegreen', marker='o', s=50, zorder=4, label='Đỉnh P')
 
-            # Highlight không gian tìm kiếm (Đã FIX để bôi xám chính xác vùng Dynamic Window)
             for j in range(1, len(r_idx)):
                 r_curr = r_idx[j]
                 r_prev = r_idx[j-1]
                 rr_dist = r_curr - r_prev
                 
-                # Tính toán lại khoảng thời gian tương tự như trong hàm analyze_p_wave_for_af
                 s_time = max(0, (r_curr - int(rr_dist * 0.45)) / 125)
                 e_time = max(0, (r_curr - int(0.05 * rr_dist)) / 125)
                 
@@ -250,10 +246,5 @@ def run_pure_p_wave_classification(dataset_path, num_plots_to_show=5, filter_vie
 
 if __name__ == "__main__":
     set_seed(42)
-    dataset_path = "/home/linhhima/PPG_ECG/AF_Detection/total_mimic_af_recon.npz"
-    
-    # Tại đây, bạn có thể thay đổi tham số filter_view để lọc đồ thị hiển thị:
-    # filter_view="all"    -> Hiển thị lẫn lộn cả AF và Non-AF
-    # filter_view="af"     -> CHỈ hiển thị các bản ghi thực tế là Rung nhĩ
-    # filter_view="non_af" -> CHỈ hiển thị các bản ghi thực tế là Bình thường
+    dataset_path = "/home/linhhima/PPG_ECG/datasets/z_score_norm/total_mimic_af.npz"
     run_pure_p_wave_classification(dataset_path, num_plots_to_show=1, filter_view="non_af")

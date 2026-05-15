@@ -25,9 +25,9 @@ INPUT_LENGTH = 2400
 TEST_DATA_PATH = '/home/linhhima/PPG_ECG/datasets/z_score_norm/total_mimic_af.npz'
 
 # Đường dẫn trọng số
-PHASE1_ECG_PATH = '/home/linhhima/PPG_ECG/Result_model2/saved_models_ecg_vae/best_ecg_autoencoder.pth'
-PHASE1_PPG_PATH = '/home/linhhima/PPG_ECG/Result_model2/saved_models_alignment_batch_32/best_ppg_alignment.pth'
-PHASE2_FLOW_PATH = '/home/linhhima/PPG_ECG/saved_models_flow_128/best_rectified_flow.pth'
+PHASE1_ECG_PATH = '/home/linhhima/PPG_ECG/saved_models_ecg_vae/best_ecg_autoencoder.pth'
+PHASE1_PPG_PATH = '/home/linhhima/PPG_ECG/saved_models_alignment/best_ppg_alignment.pth'
+PHASE2_FLOW_PATH = '/home/linhhima/PPG_ECG/saved_models_flow/best_rectified_flow.pth'
 
 ODE_STEPS = 10 # Số bước giải Euler cho Rectified Flow
 

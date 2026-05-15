@@ -26,11 +26,11 @@ SEED = 40
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 BATCH_SIZE = 64
 INPUT_LENGTH = 2400
-TEST_DATA_PATH = '/home/linhhima/PPG_ECG/datasets/z_score_norm/total_mimic_af.npz'
+TEST_DATA_PATH = '/home/linhhima/Diffusion datasets/combined_segment_split_test.npz'
 
 # Đường dẫn trọng số
 PHASE1_MODEL_PATH = '/home/linhhima/PPG_ECG/saved_models_ecg_vae/best_ecg_autoencoder.pth'
-PHASE2_MODEL_PATH = '/home/linhhima/PPG_ECG/saved_models_alignment_new/best_ppg_alignment.pth'
+PHASE2_MODEL_PATH = '/home/linhhima/PPG_ECG/saved_models_alignment/best_ppg_alignment.pth'
 
 NUM_SAMPLES_TO_VISUALIZE = 1900
 

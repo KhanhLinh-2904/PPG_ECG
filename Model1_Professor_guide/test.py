@@ -373,4 +373,5 @@ def run_peak_count_evaluation():
 if __name__ == "__main__":
     # run_visualization()
     # run_loss()
-    run_peak_count_evaluation()
+    # run_peak_count_evaluation()
+    save_ecg_reconstruction(output_path = '/home/linhhima/PPG_ECG/AF_Detection/total_mimic_af_recon.npz')
