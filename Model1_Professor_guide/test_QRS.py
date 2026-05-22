@@ -3,7 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
 from scipy.signal import butter, filtfilt, find_peaks
-from tqdm import tqdm  # Thêm thư viện tqdm để tạo thanh tiến trình
+from tqdm import tqdm
 import random
 import os
 
@@ -20,7 +20,7 @@ BATCH_SIZE = 64
 INPUT_LENGTH = 2400
 OUTPUT_EMBED_DIM = 128
 SEQ_LENGTH = 2400
-TEST_DATA_PATH = '/home/linhhima/PPG_ECG/datasets/z_score_norm/total_mimic_af.npz'
+TEST_DATA_PATH = '/home/linhhima/Diffusion_datasets/combined_segment_split_test.npz'
 CLIP_MODEL_PATH = '/home/linhhima/PPG_ECG/best_multitask_model.pth'
 
 SAMPLING_RATE = 125 # Hz
@@ -46,7 +46,7 @@ def load_model():
     return model
 
 def pan_tompkins_qrs(ecg_signal: np.ndarray, fs: int = 125):
-    """Thuật toán Pan-Tompkins tự động tìm đỉnh R độc lập cho mỗi tín hiệu"""
+    """Tìm đỉnh R chuẩn từ tín hiệu Ground Truth"""
     ecg_signal = np.array(ecg_signal).flatten()
     nyq = 0.5 * fs
     b, a = butter(1, [5.0 / nyq, 15.0 / nyq], btype='band')
@@ -75,13 +75,14 @@ def pan_tompkins_qrs(ecg_signal: np.ndarray, fs: int = 125):
     return np.array(r_peaks)
 
 def extract_heartbeats(ecg_signal: np.ndarray, r_peaks: np.ndarray, fs: int, left_ms: int, right_ms: int):
-    """Cắt các cụm P-QRS-T xung quanh đỉnh R"""
+    """Cắt các cụm P-QRS-T xung quanh đỉnh R chuẩn"""
     ecg_signal = np.array(ecg_signal).flatten()
     left_samples = int((left_ms / 1000.0) * fs)
     right_samples = int((right_ms / 1000.0) * fs)
     
     heartbeats = []
     for r in r_peaks:
+        # Đảm bảo cửa sổ cắt không bị tràn ra ngoài mảng
         if r - left_samples >= 0 and r + right_samples < len(ecg_signal):
             beat = ecg_signal[r - left_samples : r + right_samples]
             heartbeats.append(beat)
@@ -89,7 +90,7 @@ def extract_heartbeats(ecg_signal: np.ndarray, r_peaks: np.ndarray, fs: int, lef
     return np.array(heartbeats)
 
 def calculate_complex_metrics(true_complex, pred_complex):
-    """Tính RMSE và Pearson cho 1 cụm P-QRS-T"""
+    """Tính RMSE và Pearson cho 1 cặp nhịp tim tương ứng"""
     # 1. RMSE
     rmse = np.sqrt(np.mean((true_complex - pred_complex) ** 2))
     
@@ -97,6 +98,7 @@ def calculate_complex_metrics(true_complex, pred_complex):
     std_true = np.std(true_complex)
     std_pred = np.std(pred_complex)
     
+    # Tránh chia cho 0 nếu tín hiệu là đường thẳng (flat)
     if std_true < 1e-6 or std_pred < 1e-6:
         pearson = 0.0 
     else:
@@ -105,20 +107,17 @@ def calculate_complex_metrics(true_complex, pred_complex):
     return rmse, pearson
 
 # ==========================================
-# 3. HÀM CHÍNH: TRÍCH XUẤT VÀ TÍNH TRUNG BÌNH
+# 3. HÀM CHÍNH: ĐÁNH GIÁ TOÀN BỘ DATASET
 # ==========================================
-def run_single_complex_evaluation():
+def run_all_complex_evaluation():
     set_seed(SEED)
     model = load_model()
-    seen_records = set() # Set dùng để theo dõi các record đã vẽ
     
-    # CỜ KIỂM SOÁT ĐỒ THỊ (Để False nếu chỉ muốn lấy điểm trung bình nhanh)
-    SHOW_PLOTS = True
-    
-    # Các biến cộng dồn để tính trung bình
+    # Các biến cộng dồn
     total_rmse = 0.0
     total_pearson = 0.0
-    valid_record_count = 0
+    total_valid_beats = 0       # Tổng số nhịp tim (beats) đã xử lý
+    total_segments_processed = 0 # Tổng số đoạn tín hiệu (segments) đã xử lý
     
     try:
         test_dataset = LoadData(TEST_DATA_PATH)
@@ -127,21 +126,14 @@ def run_single_complex_evaluation():
         print(f"Error loading dataset: {e}")
         return
 
-    print("[*] Bắt đầu trích xuất 1 cụm P-QRS-T cho mỗi Record...")
-    if not SHOW_PLOTS:
-        print("[!] Chế độ ẩn đồ thị được bật (SHOW_PLOTS = False). Đang tính toán điểm trung bình...")
+    print("[*] Bắt đầu trích xuất TẤT CẢ nhịp tim từ TẤT CẢ các Segments...")
     
-    # Tạo trục thời gian cho đồ thị (từ -250ms đến +400ms)
-    total_samples = int((LEFT_WINDOW_MS + RIGHT_WINDOW_MS) / 1000.0 * SAMPLING_RATE)
-    time_axis_ms = np.linspace(-LEFT_WINDOW_MS, RIGHT_WINDOW_MS, total_samples)
-
     with torch.no_grad():
-        for batch_idx, batch_data in enumerate(tqdm(test_loader, desc="Processing Batches")):
+        for batch_idx, batch_data in enumerate(tqdm(test_loader, desc="Evaluating Beats")):
             ecg = batch_data[0].float().unsqueeze(1).to(DEVICE) if batch_data[0].dim() == 2 else batch_data[0].float().to(DEVICE)
             ppg = batch_data[1].float().unsqueeze(1).to(DEVICE) if batch_data[1].dim() == 2 else batch_data[1].float().to(DEVICE)
             
-            record_names = batch_data[2] if len(batch_data) > 2 else [f"Batch_{batch_idx}_Idx_{i}" for i in range(ecg.shape[0])]
-
+            # Dự đoán ECG
             _, _, predicted_ecg = model(ecg, ppg)
 
             ecg_true_np = ecg.cpu().squeeze().numpy()
@@ -150,76 +142,48 @@ def run_single_complex_evaluation():
             ecg_true_np = np.atleast_2d(ecg_true_np)
             ecg_pred_np = np.atleast_2d(ecg_pred_np)
 
+            # Quét qua từng đoạn segment trong Batch
             for b in range(ecg_true_np.shape[0]):
-                rec_name = record_names[b]
-                
-                # Bỏ qua nếu record này đã được xử lý rồi
-                if rec_name in seen_records:
-                    continue
-
+                total_segments_processed += 1
                 true_s = ecg_true_np[b]
                 pred_s = ecg_pred_np[b]
 
-                # Bước 1: Tìm đỉnh R độc lập
-                true_peaks = pan_tompkins_qrs(true_s, fs=SAMPLING_RATE)
-                pred_peaks = pan_tompkins_qrs(pred_s, fs=SAMPLING_RATE)
+                # BƯỚC 1: Lấy các đỉnh R chuẩn từ ECG Ground Truth
+                anchor_r_peaks = pan_tompkins_qrs(true_s, fs=SAMPLING_RATE)
 
-                if len(true_peaks) == 0 or len(pred_peaks) == 0:
-                    continue
+                if len(anchor_r_peaks) == 0:
+                    continue # Bỏ qua segment nếu không tìm thấy nhịp tim nào
 
-                # Bước 2: Cắt các chu kỳ tim
-                true_beats = extract_heartbeats(true_s, true_peaks, SAMPLING_RATE, LEFT_WINDOW_MS, RIGHT_WINDOW_MS)
-                pred_beats = extract_heartbeats(pred_s, pred_peaks, SAMPLING_RATE, LEFT_WINDOW_MS, RIGHT_WINDOW_MS)
+                # BƯỚC 2: Dùng chung anchor_r_peaks để trích xuất nhịp tim cho cả 2 tín hiệu
+                # Đảm bảo true_beats và pred_beats khớp nhau 100% về khung thời gian
+                true_beats = extract_heartbeats(true_s, anchor_r_peaks, SAMPLING_RATE, LEFT_WINDOW_MS, RIGHT_WINDOW_MS)
+                pred_beats = extract_heartbeats(pred_s, anchor_r_peaks, SAMPLING_RATE, LEFT_WINDOW_MS, RIGHT_WINDOW_MS)
 
-                if len(true_beats) == 0 or len(pred_beats) == 0:
-                    continue
-
-                # Bước 3: Chỉ lấy đúng 1 cụm duy nhất (cụm đầu tiên hợp lệ)
-                true_complex = true_beats[0]
-                pred_complex = pred_beats[0]
-
-                # Đánh dấu record này đã được xử lý
-                seen_records.add(rec_name)
-
-                # Bước 4: Tính toán RMSE và Pearson trên 1 cụm này
-                rmse_val, pearson_val = calculate_complex_metrics(true_complex, pred_complex)
-                
-                # Cộng dồn điểm số
-                total_rmse += rmse_val
-                total_pearson += pearson_val
-                valid_record_count += 1
-
-                # Bước 5: Vẽ đồ thị so sánh trực tiếp (Chỉ vẽ khi SHOW_PLOTS = True)
-                if SHOW_PLOTS:
-                    plt.figure(figsize=(10, 6))
-                    plt.plot(time_axis_ms, true_complex, color='black', linewidth=2.5, label='Ground Truth Complex')
-                    plt.plot(time_axis_ms, pred_complex, color='red', linestyle='--', linewidth=2, label='Predicted Complex')
+                # BƯỚC 3: Tính toán chỉ số cho TỪNG NHỊP TIM (Beat) trong Segment
+                for true_complex, pred_complex in zip(true_beats, pred_beats):
+                    rmse_val, pearson_val = calculate_complex_metrics(true_complex, pred_complex)
                     
-                    plt.axvline(x=0, color='gray', linestyle=':', alpha=0.7, label='R-peak (0 ms)')
+                    # Cộng dồn
+                    total_rmse += rmse_val
+                    total_pearson += pearson_val
+                    total_valid_beats += 1
 
-                    plt.title(f"Record: {rec_name}\nPPG2ECG Model: Single P-QRS-T Complex", fontsize=14, fontweight='bold')
-                    plt.suptitle(f"RMSE: {rmse_val:.4f}  |  Pearson: {pearson_val:.4f}", color='blue', fontsize=12)
-                    plt.xlabel("Time relative to R-peak (ms)", fontsize=11)
-                    plt.ylabel("Amplitude", fontsize=11)
-                    plt.legend(loc="upper right")
-                    plt.grid(True, alpha=0.3)
-                    plt.tight_layout()
-                    plt.show()
-
-    # IN BÁO CÁO KẾT QUẢ TRUNG BÌNH TỔNG THỂ
-    if valid_record_count > 0:
-        avg_rmse = total_rmse / valid_record_count
-        avg_pearson = total_pearson / valid_record_count
+    # IN BÁO CÁO KẾT QUẢ CUỐI CÙNG
+    if total_valid_beats > 0:
+        avg_rmse = total_rmse / total_valid_beats
+        avg_pearson = total_pearson / total_valid_beats
         
-        print(f"\n{'='*55}")
-        print(f"BÁO CÁO KẾT QUẢ TRUNG BÌNH (CLIP MODEL) - P-QRS-T TEMPLATE")
-        print(f"{'='*55}")
-        print(f"Tổng số Record hợp lệ được đánh giá : {valid_record_count}")
-        print(f"Average RMSE                       : {avg_rmse:.4f}")
-        print(f"Average Pearson Correlation        : {avg_pearson:.4f}")
-        print(f"{'='*55}")
+        print(f"\n{'='*60}")
+        print(f"BÁO CÁO ĐÁNH GIÁ HÌNH THÁI (MORPHOLOGY) - TẤT CẢ CÁC NHỊP")
+        print(f"{'='*60}")
+        print(f"Tổng số Segments đã quét        : {total_segments_processed:,}")
+        print(f"Tổng số Beats hợp lệ trích xuất : {total_valid_beats:,}")
+        print(f"------------------------------------------------------------")
+        print(f"Average RMSE (trên mỗi Beat)    : {avg_rmse:.4f}")
+        print(f"Average Pearson (trên mỗi Beat) : {avg_pearson:.4f}")
+        print(f"{'='*60}")
     else:
-        print("\n[!] Không tìm thấy đoạn P-QRS-T hợp lệ nào trong toàn bộ tập dữ liệu.")
+        print("\n[!] Không tìm thấy cụm P-QRS-T hợp lệ nào để đánh giá.")
 
 if __name__ == "__main__":
-    run_single_complex_evaluation()
+    run_all_complex_evaluation()

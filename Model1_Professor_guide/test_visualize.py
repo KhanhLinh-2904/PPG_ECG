@@ -15,7 +15,7 @@ from scipy.stats import gaussian_kde
 from matplotlib.patches import Patch
 
 from load_data import LoadData 
-from CLIP_2stage import ECG_PPG_Fusion_Model
+from CLIP import ECG_PPG_Fusion_Model
 
 # ==========================================
 # CẤU HÌNH (CONFIGURATIONS)

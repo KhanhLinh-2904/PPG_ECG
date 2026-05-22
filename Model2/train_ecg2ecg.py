@@ -8,6 +8,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from torch.cuda.amp import autocast, GradScaler
 from tqdm import tqdm
+import matplotlib.pyplot as plt  # <--- THÊM THƯ VIỆN VẼ BIỂU ĐỒ
 
 from load_data import LoadData
 from ecg2ecg import ECGAutoencoder, ECGAEConfig, ECGReconstructionLoss
@@ -19,12 +20,13 @@ from ecg2ecg import ECGAutoencoder, ECGAEConfig, ECGReconstructionLoss
 class TrainConfig:
     seed: int = 42
 
-    train_path: str = "/home/linhhima/Diffusion datasets/combined_segment_split_train.npz"
-    val_path: str = "/home/linhhima/Diffusion datasets/combined_segment_split_val.npz"
+    train_path: str = "/home/linhhima/Diffusion_datasets/combined_train.npz"
+    val_path: str = "/home/linhhima/Diffusion_datasets/combined_val.npz"
 
     # Chỉ dùng 1 file lưu model duy nhất
     save_dir: str = "saved_models_ecg_vae"
     best_model_name: str = "best_ecg_autoencoder.pth"
+    plot_name: str = "loss_curve_ecg_ecg.png"  # <--- THÊM TÊN FILE HÌNH ẢNH BIỂU ĐỒ
 
     batch_size: int = 128
     epochs: int = 100
@@ -84,6 +86,26 @@ def save_checkpoint(path, epoch, model, optimizer, best_loss, model_cfg, train_c
         "model_config": model_cfg,
         "train_config": asdict(train_cfg),
     }, path)
+
+# ---- THÊM HÀM VẼ VÀ LƯU BIỂU ĐỒ ----
+def plot_loss_curve(train_losses, val_losses, save_dir, filename):
+    plt.figure(figsize=(10, 6))
+    epochs = range(1, len(train_losses) + 1)
+    
+    plt.plot(epochs, train_losses, label="Training Loss", color="blue", linewidth=2)
+    plt.plot(epochs, val_losses, label="Validation Loss", color="red", linewidth=2, linestyle="--")
+    
+    plt.title("Training and Validation Loss Curve", fontsize=14, fontweight='bold')
+    plt.xlabel("Epochs", fontsize=12)
+    plt.ylabel("Loss Total", fontsize=12)
+    plt.grid(True, linestyle=":", alpha=0.6)
+    plt.legend(fontsize=12)
+    
+    # Lưu biểu đồ vào thư mục saved_models
+    plot_path = os.path.join(save_dir, filename)
+    plt.savefig(plot_path, bbox_inches='tight', dpi=300)
+    plt.close()
+    print(f"[+] Đã vẽ và lưu biểu đồ Loss tại: {plot_path}")
 
 # ============================================================
 # 3. Hàm Huấn luyện & Đánh giá (Train / Eval)
@@ -164,6 +186,10 @@ def main():
     bad_epochs = 0
     save_path = os.path.join(CFG.save_dir, CFG.best_model_name)
 
+    # ---- KHỞI TẠO DANH SÁCH LƯU LOSS QUA CÁC EPOCH ----
+    train_losses = []
+    val_losses = []
+
     print("\n[*] Bắt đầu quá trình huấn luyện...")
     for epoch in range(1, CFG.epochs + 1):
         # 1. Chạy Huấn luyện
@@ -171,6 +197,10 @@ def main():
         
         # 2. Chạy Đánh giá
         val_loss = validate_one_epoch(model, criterion, val_loader)
+
+        # ---- LƯU LẠI GIÁ TRỊ VÀO LIST ----
+        train_losses.append(train_loss)
+        val_losses.append(val_loss)
 
         # 3. Cập nhật Learning Rate
         scheduler.step(val_loss)
@@ -192,6 +222,9 @@ def main():
             break
 
     print("\n[*] Huấn luyện hoàn tất!")
+    
+    # ---- GỌI HÀM VẼ BIỂU ĐỒ KHI KẾT THÚC ----
+    plot_loss_curve(train_losses, val_losses, CFG.save_dir, CFG.plot_name)
 
 if __name__ == "__main__":
     main()

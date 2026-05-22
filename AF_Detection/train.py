@@ -3,13 +3,14 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
-from model import NeuralNetwork
+from model import FocusedNeuralNetwork 
 import os
 import matplotlib.pyplot as plt
 import random
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using devices: {device}")
+
 def set_seed(seed=42):
     random.seed(seed)
     os.environ['PYTHONHASHSEED'] = str(seed)
@@ -21,7 +22,7 @@ def set_seed(seed=42):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
     
-CHECKPOINT_DIR = "/home/linhhima/PPG_ECG/AF_Detection/new_checkpoints/"
+CHECKPOINT_DIR = "/home/linhhima/PPG_ECG/AF_Detection/new_checkpoints_2branch/"
 os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 
 def train_model(train_loader, epochs, model, criterion, optimizer, device):
@@ -30,6 +31,7 @@ def train_model(train_loader, epochs, model, criterion, optimizer, device):
 
     best_train_acc = 0.0
     best_model_path = os.path.join(CHECKPOINT_DIR, "best_model.pth")
+    epoch_best = 0
 
     model.to(device)
 
@@ -99,11 +101,15 @@ def plot_metrics(train_losses, train_accs):
 
 if __name__ == "__main__":
     set_seed(42)
+    
     # 1. Load training data
     train_data = np.load('/home/linhhima/PPG_ECG/AF_Detection/detect_af_MIT_BIH_train.npz')
     # Note: Adjust keys 'X', 'y' to match your .npz file
     X_train = torch.tensor(train_data['X'], dtype=torch.float32)
     y_train = torch.tensor(train_data['y'], dtype=torch.long)
+
+    # Kiểm tra kích thước đầu vào (Nên in ra để đảm bảo là [Batch, 4])
+    print(f"Shape of X_train: {X_train.shape}") 
 
     # 2. DataLoader
     train_dataset = TensorDataset(X_train, y_train)
@@ -111,7 +117,9 @@ if __name__ == "__main__":
 
     # 3. Initialize Model, Loss, Optimizer
     num_classes = len(torch.unique(y_train))
-    model = NeuralNetwork(num_classes=num_classes)
+    
+    # ĐÃ SỬA: Gọi Model mới tạo
+    model = FocusedNeuralNetwork(num_classes=num_classes)
     
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)

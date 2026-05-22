@@ -9,6 +9,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from torch.cuda.amp import autocast, GradScaler
 from tqdm import tqdm
+import matplotlib.pyplot as plt
 
 from load_data import LoadData
 from ecg2ecg import ECGAutoencoder, ECGAEConfig
@@ -21,12 +22,13 @@ from ppg2ecg import PPG2ECGModel, PPG2ECGConfig, CardioAlignLoss
 class TrainConfig:
     seed: int = 42
     
-    train_path: str = "/home/linhhima/Diffusion datasets/combined_segment_split_train.npz"
-    val_path: str = "/home/linhhima/Diffusion datasets/combined_segment_split_val.npz"
+    train_path: str = "/home/linhhima/Diffusion_datasets/combined_train.npz"
+    val_path: str = "/home/linhhima/Diffusion_datasets/combined_val.npz"
 
     ecg_checkpoint_path: str = "/home/linhhima/PPG_ECG/saved_models_ecg_vae/best_ecg_autoencoder.pth" 
     save_dir: str = "saved_models_alignment"
     best_model_name: str = "best_ppg_alignment.pth"
+    plot_name: str = "alignment_loss_curves.png"
 
     # Training Params
     batch_size: int = 32
@@ -52,12 +54,12 @@ class TrainConfig:
 
     # Model PPG Params
     use_derivatives: bool = True
-    proj_dim: int = 128
+    # (Đã xóa proj_dim vì cấu trúc mới không còn dùng projector_head)
 
     # --- TRỌNG SỐ CHO CÁC HÀM LOSS ---
     coral_weight: float = 1.0
     kl_weight: float = 1.0
-    smoothl1_weight: float = 0.0  # Trọng số cho Pairwise Smooth L1 Loss
+    # (Đã xóa smoothl1_weight/pair_loss)
 
 CFG = TrainConfig()
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -83,6 +85,35 @@ def get_dataloaders():
         shuffle=False, num_workers=CFG.num_workers, pin_memory=True
     )
     return train_loader, val_loader
+
+# ---- HÀM VẼ LƯU BIỂU ĐỒ ----
+def plot_alignment_losses(history, save_dir, filename):
+    epochs = range(1, len(history["train_total"]) + 1)
+    metrics = ["total", "coral", "kl"]
+    titles = ["Total Loss", "CORAL Loss", "KL Divergence Loss"]
+    colors = {"train": "blue", "val": "red"}
+
+    # Vẽ 3 đồ thị nằm ngang
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+    axes = axes.flatten()
+
+    for i, metric in enumerate(metrics):
+        axes[i].plot(epochs, history[f"train_{metric}"], label="Train", color=colors["train"], linewidth=1.5)
+        axes[i].plot(epochs, history[f"val_{metric}"], label="Val", color=colors["val"], linewidth=1.5, linestyle="--")
+        
+        axes[i].set_title(titles[i], fontsize=12, fontweight="bold")
+        axes[i].set_xlabel("Epochs", fontsize=10)
+        axes[i].set_ylabel("Loss Value", fontsize=10)
+        axes[i].grid(True, linestyle=":", alpha=0.6)
+        axes[i].legend(fontsize=10)
+
+    plt.suptitle("PPG-ECG Alignment Training Metrics", fontsize=16, fontweight="bold")
+    plt.tight_layout()
+    
+    plot_path = os.path.join(save_dir, filename)
+    plt.savefig(plot_path, bbox_inches="tight", dpi=300)
+    plt.close()
+    print(f"\n[+] Đã vẽ và lưu biểu đồ Alignment Loss tại: {plot_path}")
 
 # ============================================================
 # 3. BUILD TEACHER MODEL (FROZEN)
@@ -121,9 +152,7 @@ def build_frozen_ecg_teacher():
 # ============================================================
 def train_one_epoch(model, criterion, optimizer, scaler, dataloader, epoch):
     model.train()
-    
-    # Thêm 'pair' để track Smooth L1 Loss
-    running = {"total": 0.0, "coral": 0.0, "kl": 0.0, "pair": 0.0}
+    running = {"total": 0.0, "coral": 0.0, "kl": 0.0}
 
     loop = tqdm(dataloader, desc=f"Train Epoch {epoch}/{CFG.epochs}")
     for ecg, ppg, _ in loop:
@@ -135,7 +164,7 @@ def train_one_epoch(model, criterion, optimizer, scaler, dataloader, epoch):
         with autocast(enabled=CFG.use_amp):
             outputs = model(ppg=ppg, ecg=ecg)
             
-            # Tính Alignment Loss (CORAL + KL + Smooth L1)
+            # Tính Alignment Loss
             align_losses = criterion(outputs)
             loss_total = align_losses["loss_total"]
 
@@ -148,13 +177,11 @@ def train_one_epoch(model, criterion, optimizer, scaler, dataloader, epoch):
         running["total"] += loss_total.item()
         running["coral"] += align_losses["loss_coral"].item()
         running["kl"] += align_losses["loss_kl"].item()
-        running["pair"] += align_losses["loss_pair"].item()  # Cộng dồn Pair Loss
 
         loop.set_postfix(
             Tot=f"{loss_total.item():.3f}",
             Coral=f"{align_losses['loss_coral'].item():.4f}",
             KL=f"{align_losses['loss_kl'].item():.3f}",
-            Pair=f"{align_losses['loss_pair'].item():.4f}",  # Hiển thị trên thanh tiến trình
         )
 
     n = len(dataloader)
@@ -164,7 +191,7 @@ def train_one_epoch(model, criterion, optimizer, scaler, dataloader, epoch):
 @torch.no_grad()
 def validate_one_epoch(model, criterion, dataloader):
     model.eval()
-    running = {"total": 0.0, "coral": 0.0, "kl": 0.0, "pair": 0.0}
+    running = {"total": 0.0, "coral": 0.0, "kl": 0.0}
 
     for ecg, ppg, _ in dataloader:
         ecg = ecg.float().unsqueeze(1).to(DEVICE) if ecg.dim() == 2 else ecg.float().to(DEVICE)
@@ -178,7 +205,6 @@ def validate_one_epoch(model, criterion, dataloader):
         running["total"] += loss_total.item()
         running["coral"] += align_losses["loss_coral"].item()
         running["kl"] += align_losses["loss_kl"].item()
-        running["pair"] += align_losses["loss_pair"].item()
 
     n = len(dataloader)
     return {k: v / n for k, v in running.items()}
@@ -196,7 +222,7 @@ def main():
     # 1. Build Frozen ECG Teacher
     ecg_teacher = build_frozen_ecg_teacher()
 
-    # 2. Cấu hình & Build PPG Student
+    # 2. Cấu hình & Build PPG Student (Đã bỏ proj_dim)
     ppg_cfg = PPG2ECGConfig(
         input_length=CFG.input_length,
         ppg_in_channels=1,
@@ -207,16 +233,14 @@ def main():
         attn_heads=CFG.attn_heads,
         attn_dropout=CFG.attn_dropout,
         use_derivatives=CFG.use_derivatives,
-        proj_dim=CFG.proj_dim,
     )
 
     model = PPG2ECGModel(ecg_ae=ecg_teacher, cfg=ppg_cfg).to(DEVICE)
 
-    # 3. Khởi tạo hàm Loss với các trọng số từ CFG
+    # 3. Khởi tạo hàm Loss với cấu trúc mới
     criterion = CardioAlignLoss(
         coral_weight=CFG.coral_weight, 
-        kl_weight=CFG.kl_weight,
-        smoothl1_weight=CFG.smoothl1_weight
+        kl_weight=CFG.kl_weight
     ).to(DEVICE)
 
     # 4. Optimizer & Scheduler
@@ -234,18 +258,29 @@ def main():
     bad_epochs = 0
     save_path = os.path.join(CFG.save_dir, CFG.best_model_name)
 
+    # ---- KHỞI TẠO LỊCH SỬ LƯU TRỮ LOSS ----
+    history = {
+        "train_total": [], "train_coral": [], "train_kl": [],
+        "val_total": [], "val_coral": [], "val_kl": []
+    }
+
     print("\n[*] Bắt đầu huấn luyện quá trình Alignment (PPG -> ECG)...")
     for epoch in range(1, CFG.epochs + 1):
         
         train_metrics = train_one_epoch(model, criterion, optimizer, scaler, train_loader, epoch)
         val_metrics = validate_one_epoch(model, criterion, val_loader)
 
+        # ---- LƯU GIÁ TRỊ EPOCH VÀO HISTORY ----
+        for metric in ["total", "coral", "kl"]:
+            history[f"train_{metric}"].append(train_metrics[metric])
+            history[f"val_{metric}"].append(val_metrics[metric])
+
         scheduler.step(val_metrics["total"])
 
-        # IN RA CHI TIẾT CÁC LOSS TẠI EPOCH SUMMARY
+        # IN EPOCH SUMMARY
         print(f"\n=> Epoch {epoch}/{CFG.epochs} Summary:")
-        print(f"   [Train] Total: {train_metrics['total']:.4f} | CORAL: {train_metrics['coral']:.4f} | KL: {train_metrics['kl']:.4f} | Pair(L1): {train_metrics['pair']:.4f}")
-        print(f"   [Val]   Total: {val_metrics['total']:.4f} | CORAL: {val_metrics['coral']:.4f} | KL: {val_metrics['kl']:.4f} | Pair(L1): {val_metrics['pair']:.4f}")
+        print(f"   [Train] Total: {train_metrics['total']:.4f} | CORAL: {train_metrics['coral']:.4f} | KL: {train_metrics['kl']:.4f}")
+        print(f"   [Val]   Total: {val_metrics['total']:.4f} | CORAL: {val_metrics['coral']:.4f} | KL: {val_metrics['kl']:.4f}")
 
         if val_metrics["total"] < best_val_loss:
             best_val_loss = val_metrics["total"]
@@ -259,6 +294,11 @@ def main():
         if bad_epochs >= CFG.patience:
             print(f"\n[!] Early Stopping được kích hoạt tại epoch {epoch}.")
             break
+
+    print("\n[*] Huấn luyện hoàn tất!")
+    
+    # ---- GỌI HÀM VẼ BIỂU ĐỒ 3 LOSS ----
+    plot_alignment_losses(history, CFG.save_dir, CFG.plot_name)
 
 if __name__ == "__main__":
     main()

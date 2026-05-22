@@ -16,14 +16,14 @@ def set_seed(seed=42):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-# Tắt cửa sổ chính của Tkinter
+# Hide the main Tkinter window
 root = tk.Tk()
 root.withdraw()
 
 # =====================================================================
-# 1. TIỀN XỬ LÝ & TÌM ĐỈNH R (Chỉ dùng làm mốc để khoanh vùng sóng P)
+# 1. PREPROCESSING & R-PEAK DETECTION
 # =====================================================================
-def pan_tompkins_qrs(ecg_signal: np.ndarray, fs: int = 125):
+def pan_tompkins_qrs(ecg_signal: np.ndarray, fs: int = 125, external_threshold: float = None, return_threshold: bool = False):
     ecg_signal = np.array(ecg_signal).flatten()
     nyq = 0.5 * fs
     b, a = butter(1, [5.0 / nyq, 15.0 / nyq], btype='band')
@@ -35,7 +35,13 @@ def pan_tompkins_qrs(ecg_signal: np.ndarray, fs: int = 125):
 
     window_width = int(0.15 * fs)
     integrated_ecg = np.convolve(squared_ecg, np.ones(window_width) / window_width, mode='same')
-    threshold = np.mean(integrated_ecg)
+    
+    # USE EXTERNAL THRESHOLD IF PROVIDED
+    if external_threshold is not None:
+        threshold = external_threshold
+    else:
+        threshold = np.mean(integrated_ecg)
+        
     min_distance = int(0.3 * fs)
     peaks_integrated, _ = find_peaks(integrated_ecg, height=threshold, distance=min_distance)
 
@@ -47,13 +53,19 @@ def pan_tompkins_qrs(ecg_signal: np.ndarray, fs: int = 125):
         if start < end:
             local_max = np.argmax(ecg_signal[start:end])
             r_peaks.append(start + local_max)
+            
+    # RETURN BOTH R-PEAKS AND THE APPLIED THRESHOLD
+    if return_threshold:
+        return np.array(r_peaks), threshold
+        
     return np.array(r_peaks)
 
 # =====================================================================
-# 2. PHÂN TÍCH VÙNG SÓNG P & LƯU TỌA ĐỘ ĐỈNH P
+# 2. P-WAVE REGION ANALYSIS & P-PEAK COORDINATE EXTRACTION
 # =====================================================================
-def analyze_p_wave_for_af(signal, fs=125):
-    r_indices = pan_tompkins_qrs(signal, fs)
+def analyze_p_wave_for_af(signal, fs=125, gt_threshold=None):
+    # PASS GT THRESHOLD TO THE PEAK DETECTION ALGORITHM
+    r_indices = pan_tompkins_qrs(signal, fs, external_threshold=gt_threshold)
     
     if len(r_indices) < 2:
         return 0.0, 0.0, [], []  
@@ -67,14 +79,14 @@ def analyze_p_wave_for_af(signal, fs=125):
     total_power_1_3 = 0.0
     total_power_3_10 = 0.0
     
-    # Quét từ nhịp thứ 2 trở đi để biết khoảng cách R-R
+    # Scan from the second beat onwards to determine the R-R interval
     for i in range(1, len(r_indices)):
         r = r_indices[i]
         r_prev = r_indices[i-1] 
         
         rr_distance = r - r_prev
         
-        # Áp dụng công thức cửa sổ hoàn toàn linh hoạt (Dynamic Window)
+        # Apply a fully flexible dynamic window formula
         search_start = int(rr_distance * 0.5)
         search_end = int(0.05 * rr_distance)
         
@@ -85,7 +97,7 @@ def analyze_p_wave_for_af(signal, fs=125):
             p_window = clean_signal[start_idx:end_idx]
             p_detrended = p_window - np.mean(p_window)
             
-            # --- TÌM SÓNG P ---
+            # --- FIND P-WAVE ---
             peaks, _ = find_peaks(p_detrended, prominence=0.5)
             if len(peaks) > 0:
                 num_p_found += 1
@@ -93,7 +105,7 @@ def analyze_p_wave_for_af(signal, fs=125):
                 abs_p_peak = start_idx + peak_idx_local
                 p_peaks_indices.append(abs_p_peak)
                 
-            # --- FFT NĂNG LƯỢNG ---
+            # --- FFT ENERGY ---
             windowed = p_detrended * np.hamming(len(p_detrended))
             N = len(windowed)
             freqs = fftfreq(N, 1/fs)[:N//2]
@@ -105,7 +117,7 @@ def analyze_p_wave_for_af(signal, fs=125):
             total_power_1_3 += power_1_3Hz
             total_power_3_10 += power_3_10Hz
 
-    # Số lượng nhịp thực tế được đưa vào phân tích (trừ đi nhịp đầu tiên)
+    # Actual number of beats analyzed (excluding the first beat)
     valid_beats = len(r_indices) - 1
     p_ratio = num_p_found / valid_beats if valid_beats > 0 else 0
     
@@ -117,53 +129,55 @@ def analyze_p_wave_for_af(signal, fs=125):
     return p_ratio, avg_energy_ratio, p_peaks_indices, r_indices
 
 # =====================================================================
-# 3. CHẨN ĐOÁN & KIỂM THỬ
+# 3. DIAGNOSIS & TESTING
 # =====================================================================
-def run_pure_p_wave_classification(dataset_path, num_plots_to_show=5, filter_view="all"):
+def run_pure_p_wave_classification(dataset_path, dataset_origin_path, num_plots_to_show=5, filter_view="all"):
     """
     filter_view: 
-        - "all"    : Xem tất cả các bản ghi
-        - "af"     : Chỉ xem các bản ghi có thực tế là Rung nhĩ (AF)
-        - "non_af" : Chỉ xem các bản ghi có thực tế là Bình thường (Non-AF)
+        - "all"    : View all records
+        - "af"     : Only view actual Atrial Fibrillation (AF) records
+        - "non_af" : Only view actual Normal (Non-AF) records
     """
-    print(f"[*] Đang load dữ liệu từ {dataset_path}...")
+    print(f"[*] Loading Reconstructed data from {dataset_path}...")
     if not os.path.exists(dataset_path):
-        print("[!] Không tìm thấy file.")
+        print("[!] dataset_path file not found.")
         return
-
     data = np.load(dataset_path, allow_pickle=True)
     ecgs = data["ecgs"]
     labels = data["labels"]
+    raw_records = data["records"]
+    record_name = raw_records
+    
+    data_orig = np.load(dataset_origin_path, allow_pickle=True)
+    ecgs_orig = data_orig["ecgs"]
     
     correct_af, correct_non_af = 0, 0
     total_af, total_non_af = 0, 0
     
     P_RATIO_THRESH = 0.7
-    ENERGY_THRESH = 1.3
 
-    print("\n[*] Đang tiến hành phân tích Sóng P...")
+    print("\n[*] Analyzing P-Waves with Ground Truth Threshold...")
     
     plots_shown = 0 
 
     for i in range(len(ecgs)):
         sig = ecgs[i]
+        true_sig = ecgs_orig[i]
         true_lbl = labels[i]
-
-        p_ratio, energy_ratio, p_peaks_idx, r_idx = analyze_p_wave_for_af(sig, fs=125)
+        name_rec = record_name[i]
         
+        # NEW STEP: Extract the standard Threshold from Ground Truth
+        _, gt_threshold = pan_tompkins_qrs(true_sig, fs=125, return_threshold=True)
+
+        # NEW STEP: Pass gt_threshold to the Reconstructed signal analysis function
+        p_ratio, energy_ratio, p_peaks_idx, r_idx = analyze_p_wave_for_af(sig, fs=125, gt_threshold=gt_threshold)
         
         if p_ratio > P_RATIO_THRESH:
             pred_lbl = 0 # Non-AF
         else:
             pred_lbl = 1 # AF
-      
-        # LUẬT CHẨN ĐOÁN
-        # if energy_ratio > ENERGY_THRESH or p_ratio < P_RATIO_THRESH:
-        #     pred_lbl = 1 # AF
-        # else:
-        #     pred_lbl = 0 # Non-AF
             
-        # Thống kê
+        # Statistics
         if true_lbl == 1:
             total_af += 1
             if pred_lbl == 1: correct_af += 1
@@ -172,9 +186,8 @@ def run_pure_p_wave_classification(dataset_path, num_plots_to_show=5, filter_vie
             if pred_lbl == 0: correct_non_af += 1
 
         # =====================================================================
-        # KHỐI LỆNH MỚI: VẼ ĐỒ THỊ HIỂN THỊ ĐỈNH P VÀ R
+        # NEW BLOCK: PLOT GRAPH DISPLAYING P AND R PEAKS
         # =====================================================================
-        # Bộ lọc kiểm tra xem có được phép vẽ đồ thị này không
         show_this_plot = False
         if filter_view == "all":
             show_this_plot = True
@@ -183,7 +196,7 @@ def run_pure_p_wave_classification(dataset_path, num_plots_to_show=5, filter_vie
         elif filter_view == "non_af" and true_lbl == 0:
             show_this_plot = True
 
-        if show_this_plot and plots_shown < num_plots_to_show and len(r_idx) > 0:
+        if show_this_plot and plots_shown < num_plots_to_show:
             fig, ax = plt.subplots(1, 1, figsize=(12, 4))
             time_ax = np.arange(len(sig)) / 125
             
@@ -191,27 +204,30 @@ def run_pure_p_wave_classification(dataset_path, num_plots_to_show=5, filter_vie
             true_str = "AF" if true_lbl == 1 else "Non-AF"
             pred_str = "AF" if pred_lbl == 1 else "Non-AF"
             
-            ax.plot(time_ax, sig, color='black', linewidth=1, alpha=0.8, label='ECG Signal')
-            ax.scatter(r_idx/125, sig[r_idx], color='red', marker='v', s=60, zorder=3, label='Đỉnh R')
+            ax.plot(time_ax, sig, color='black', linewidth=1, alpha=0.8, label='Reconstructed ECG')
+            
+            # Only plot R-peaks if found
+            if len(r_idx) > 0:
+                ax.scatter(r_idx/125, sig[r_idx], color='red', marker='v', s=60, zorder=3, label='R-Peak')
             
             if len(p_peaks_idx) > 0:
                 p_peaks_arr = np.array(p_peaks_idx)
-                ax.scatter(p_peaks_arr/125, sig[p_peaks_arr], color='limegreen', marker='o', s=50, zorder=4, label='Đỉnh P')
+                ax.scatter(p_peaks_arr/125, sig[p_peaks_arr], color='limegreen', marker='o', s=50, zorder=4, label='P-Peak')
 
-            # Highlight không gian tìm kiếm (Đã FIX để bôi xám chính xác vùng Dynamic Window)
-            for j in range(1, len(r_idx)):
-                r_curr = r_idx[j]
-                r_prev = r_idx[j-1]
-                rr_dist = r_curr - r_prev
-                
-                # Tính toán lại khoảng thời gian tương tự như trong hàm analyze_p_wave_for_af
-                s_time = max(0, (r_curr - int(rr_dist * 0.45)) / 125)
-                e_time = max(0, (r_curr - int(0.05 * rr_dist)) / 125)
-                
-                ax.axvspan(s_time, e_time, color='gray', alpha=0.15)
+            # Highlight search space
+            if len(r_idx) > 1:
+                for j in range(1, len(r_idx)):
+                    r_curr = r_idx[j]
+                    r_prev = r_idx[j-1]
+                    rr_dist = r_curr - r_prev
+                    
+                    s_time = max(0, (r_curr - int(rr_dist * 0.45)) / 125)
+                    e_time = max(0, (r_curr - int(0.05 * rr_dist)) / 125)
+                    
+                    ax.axvspan(s_time, e_time, color='gray', alpha=0.15)
 
-            ax.set_title(f"Record {i} | Thực tế: {true_str} | Dự đoán: {pred_str}\nP-Ratio: {p_ratio:.2f}, Energy Ratio: {energy_ratio:.2f}", fontweight='bold', color=title_color)
-            ax.set_xlabel("Thời gian (giây)")
+            ax.set_title(f"Record {name_rec} | Ground Truth: {true_str} | Predicted: {pred_str}\nP-over-R-Ratio: {p_ratio:.2f}", fontweight='bold', color=title_color)
+            ax.set_xlabel("Time (sec)")
             ax.set_ylabel("Amplitude")
             ax.legend(loc='upper right')
             ax.grid(True, alpha=0.3)
@@ -222,10 +238,10 @@ def run_pure_p_wave_classification(dataset_path, num_plots_to_show=5, filter_vie
             plots_shown += 1
 
     # =====================================================================
-    # IN BẢNG TỔNG KẾT
+    # PRINT SUMMARY TABLE
     # =====================================================================
     print("\n" + "="*60)
-    print(" 📊 TỔNG KẾT CHẨN ĐOÁN RUNG NHĨ (CHỈ DÙNG P-WAVE)")
+    print(" 📊 ATRIAL FIBRILLATION DIAGNOSIS SUMMARY (P-WAVE ONLY)")
     print("="*60)
     
     acc_af = (correct_af / total_af * 100) if total_af > 0 else 0
@@ -233,27 +249,29 @@ def run_pure_p_wave_classification(dataset_path, num_plots_to_show=5, filter_vie
     total_records = total_af + total_non_af
     overall_acc = ((correct_af + correct_non_af) / total_records * 100) if total_records > 0 else 0
 
-    print(f"🔹 Tổng số bản ghi test : {total_records} records")
+    print(f"🔹 Total test records        : {total_records} records")
     print("-" * 60)
-    print(f"🔴 RUNG NHĨ (AF):")
-    print(f"   - Số ca thực tế         : {total_af} ca")
-    print(f"   - Máy dự đoán ĐÚNG      : {correct_af} ca")
-    print(f"   => Độ chính xác (Sens)  : {acc_af:.2f}%")
+    print(f"🔴 ATRIAL FIBRILLATION (AF):")
+    print(f"   - Actual cases            : {total_af}")
+    print(f"   - Correctly predicted     : {correct_af}")
+    print(f"   => Accuracy (Sensitivity) : {acc_af:.2f}%")
     print("-" * 60)
-    print(f"🟢 BÌNH THƯỜNG (Non-AF):")
-    print(f"   - Số ca thực tế         : {total_non_af} ca")
-    print(f"   - Máy dự đoán ĐÚNG      : {correct_non_af} ca")
-    print(f"   => Độ chính xác (Spec)  : {acc_non_af:.2f}%")
+    print(f"🟢 NORMAL (Non-AF):")
+    print(f"   - Actual cases            : {total_non_af}")
+    print(f"   - Correctly predicted     : {correct_non_af}")
+    print(f"   => Accuracy (Specificity) : {acc_non_af:.2f}%")
     print("="*60)
-    print(f"🏆 ĐỘ CHÍNH XÁC TỔNG THỂ  : {overall_acc:.2f}%")
+    print(f"🏆 OVERALL ACCURACY          : {overall_acc:.2f}%")
     print("="*60 + "\n")
 
 if __name__ == "__main__":
     set_seed(42)
-    dataset_path = "/home/linhhima/PPG_ECG/AF_Detection/total_mimic_af_recon.npz"
+    dataset_path = "/home/linhhima/PPG_ECG/datasets/z_score_norm/total_mimic_af.npz"
+    dataset_origin = "/home/linhhima/PPG_ECG/datasets/z_score_norm/total_mimic_af.npz"
     
-    # Tại đây, bạn có thể thay đổi tham số filter_view để lọc đồ thị hiển thị:
-    # filter_view="all"    -> Hiển thị lẫn lộn cả AF và Non-AF
-    # filter_view="af"     -> CHỈ hiển thị các bản ghi thực tế là Rung nhĩ
-    # filter_view="non_af" -> CHỈ hiển thị các bản ghi thực tế là Bình thường
-    run_pure_p_wave_classification(dataset_path, num_plots_to_show=1, filter_view="non_af")
+    run_pure_p_wave_classification(
+        dataset_path=dataset_path, 
+        dataset_origin_path=dataset_origin, 
+        num_plots_to_show=100, 
+        filter_view="non_af"
+    )

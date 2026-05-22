@@ -159,9 +159,6 @@ class PPG2ECGConfig:
     attn_dropout: float = 0.0
     use_derivatives: bool = True
 
-    proj_dim: int = 128
-    contrastive_temperature: float = 0.1
-
 
 # ============================================================
 # PPG Encoder & Heads
@@ -220,9 +217,6 @@ class TemporalBottleneck(nn.Module):
             nn.Conv1d(in_dim, in_dim, kernel_size=3, padding=1),
             LayerNorm1D(in_dim),
             nn.GELU(),
-            nn.Conv1d(in_dim, in_dim, kernel_size=3, padding=1),
-            LayerNorm1D(in_dim),
-            nn.GELU(),
         )
         self.to_latent = nn.Conv1d(in_dim, latent_channels, kernel_size=1)
 
@@ -230,19 +224,6 @@ class TemporalBottleneck(nn.Module):
         x = self.pre(feat)
         z = self.to_latent(x)
         return z
-
-
-class ProjectionHead(nn.Module):
-    def __init__(self, in_dim: int, proj_dim: int):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(in_dim, in_dim),
-            nn.GELU(),
-            nn.Linear(in_dim, proj_dim),
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)
 
 
 # ============================================================
@@ -270,12 +251,6 @@ class PPG2ECGModel(nn.Module):
         self.ppg_encoder = PPGEncoder1D(cfg)
         self.ppg_latent_head = TemporalBottleneck(cfg.dims[-1], cfg.latent_channels)
 
-        # 3. Projection Heads (Dùng để tính Contrastive Loss)
-        self.ppg_proj = ProjectionHead(cfg.latent_channels, cfg.proj_dim)
-        self.ecg_proj = ProjectionHead(cfg.latent_channels, cfg.proj_dim)
-        for p in self.ecg_proj.parameters():
-            p.requires_grad = False
-
     @staticmethod
     def pool_temporal(x: torch.Tensor) -> torch.Tensor:
         return F.adaptive_avg_pool1d(x, 1).squeeze(-1)
@@ -285,12 +260,8 @@ class PPG2ECGModel(nn.Module):
         feat_ecg = self.ecg_encoder(ecg)
         z_ecg = self.ecg_latent_head(feat_ecg)
 
-        z_ecg_pool = self.pool_temporal(z_ecg)
-        proj_ecg = F.normalize(self.ecg_proj(z_ecg_pool), dim=-1)
-
         return {
             "z_ecg": z_ecg,
-            "proj_ecg": proj_ecg,
         }
 
     def forward(self, ppg: torch.Tensor, ecg: Optional[torch.Tensor] = None) -> Dict[str, torch.Tensor]:
@@ -298,12 +269,8 @@ class PPG2ECGModel(nn.Module):
         feat_ppg = self.ppg_encoder(ppg)
         z_ppg = self.ppg_latent_head(feat_ppg)
 
-        z_ppg_pool = self.pool_temporal(z_ppg)
-        proj_ppg = F.normalize(self.ppg_proj(z_ppg_pool), dim=-1)
-
         outputs = {
             "z_ppg": z_ppg,
-            "proj_ppg": proj_ppg,
         }
 
         # Nếu có cung cấp ECG (Lúc Training), xử lý luồng ECG Teacher
@@ -313,38 +280,23 @@ class PPG2ECGModel(nn.Module):
         return outputs
 
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from typing import Dict
-
-# ============================================================
-# Loss (Đồng bộ không gian Latent)
-# ============================================================
 class CardioAlignLoss(nn.Module):
     """
     Hàm Loss dùng để căn chỉnh không gian Latent giữa PPG và ECG:
     1. CORAL Loss: Đồng bộ cấu trúc ma trận hiệp phương sai.
     2. KL Divergence: Ép phân phối thống kê batch giống nhau.
-    3. Whitened Smooth L1 Loss (Pairwise): Căn chỉnh "hình dáng" (pattern) của từng cặp 
-       latent sau khi đã chuẩn hóa, giúp không phá vỡ mean/variance quá mạnh.
     """
     def __init__(
         self,
         coral_weight: float = 5.0,
         kl_weight: float = 1.0,
-        smoothl1_weight: float = 1.0,  # Trọng số cho Whitened Smooth L1 Loss
         eps: float = 1e-6,
     ):
         super().__init__()
         self.coral_weight = coral_weight
         self.kl_weight = kl_weight
-        self.smoothl1_weight = smoothl1_weight
         self.eps = eps
         
-        # Khởi tạo hàm Smooth L1 Loss có sẵn của PyTorch
-        self.smooth_l1 = nn.SmoothL1Loss()
-
     def coral_loss(self, source: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         """ Tính CORAL trên toàn bộ chiều dữ liệu của batch [B, C*L] """
         source = source.flatten(1)
@@ -376,26 +328,6 @@ class CardioAlignLoss(nn.Module):
         kl = 0.5 * (torch.log(var_e / var_p) + (var_p + (mean_p - mean_e)**2) / var_e - 1.0)
         return torch.mean(kl)
 
-    def whitened_smooth_l1_loss(self, source: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        """ Tính Smooth L1 trên latent đã được chuẩn hóa (Whitened) theo từng sample """
-        # Trải phẳng dữ liệu theo từng sample (Batch size, -1)
-        source_flat = source.view(source.size(0), -1)
-        target_flat = target.view(target.size(0), -1)
-
-        # Tính Mean và Std cho từng sample (giữ nguyên chiều batch)
-        source_mean = source_flat.mean(dim=1, keepdim=True)
-        source_std = source_flat.std(dim=1, keepdim=True) + self.eps
-        
-        target_mean = target_flat.mean(dim=1, keepdim=True)
-        target_std = target_flat.std(dim=1, keepdim=True) + self.eps
-
-        # Chuẩn hóa Whitening (Z-score normalization)
-        source_hat = (source_flat - source_mean) / source_std
-        target_hat = (target_flat - target_mean) / target_std
-
-        # Tính Smooth L1 trên dữ liệu đã chuẩn hóa
-        return self.smooth_l1(source_hat, target_hat)
-
     def forward(self, outputs: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         z_ppg = outputs["z_ppg"]
         z_ecg = outputs["z_ecg"].detach()
@@ -406,19 +338,14 @@ class CardioAlignLoss(nn.Module):
         # 2. Tính KL Divergence
         loss_kl = self.kl_divergence_batch(z_ppg, z_ecg)
         
-        # 3. Tính Whitened Pairwise Smooth L1 Loss
-        loss_pair = self.whitened_smooth_l1_loss(z_ppg, z_ecg)
-
         # Tổng hợp loss dựa trên các trọng số
         loss_total = (
             self.coral_weight * loss_coral
             + self.kl_weight * loss_kl
-            + self.smoothl1_weight * loss_pair
         )
 
         return {
             "loss_total": loss_total,
             "loss_coral": loss_coral,
             "loss_kl": loss_kl,
-            "loss_pair": loss_pair,  
         }

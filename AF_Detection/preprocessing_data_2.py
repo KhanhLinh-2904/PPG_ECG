@@ -10,7 +10,7 @@ import tkinter as tk
 from tkinter import messagebox
 import random
 import torch
-from p_wave_detection import get_p_ratio
+from p_wave_detection import get_p_ratio, pan_tompkins_qrs
 
 fs = 125
 
@@ -26,50 +26,41 @@ def set_seed(seed=42):
 root = tk.Tk()
 root.withdraw()
 
-def pan_tompkins_qrs(ecg_signal: np.ndarray):
-    """Thuật toán Pan-Tompkins thay thế cho wfdb.xqrs_detect"""
-    ecg_signal = np.array(ecg_signal).flatten()
-    nyq = 0.5 * fs
-    b, a = butter(1, [5.0 / nyq, 15.0 / nyq], btype='band')
-    filtered_ecg = filtfilt(b, a, ecg_signal)
-    
-    diff_ecg = np.diff(filtered_ecg)
-    diff_ecg = np.insert(diff_ecg, 0, diff_ecg[0])
-    squared_ecg = diff_ecg ** 2
-    
-    window_width = int(0.15 * fs)
-    integrated_ecg = np.convolve(squared_ecg, np.ones(window_width) / window_width, mode='same')
-    threshold = np.mean(integrated_ecg)
-    min_distance = int(0.3 * fs)
-    peaks_integrated, _ = find_peaks(integrated_ecg, height=threshold, distance=min_distance)
-    
-    r_peaks = []
-    search_window = int(0.05 * fs)
-    for p in peaks_integrated:
-        start = max(0, p - search_window)
-        end = min(len(ecg_signal), p + search_window)
-        if start < end:
-            local_max = np.argmax(ecg_signal[start:end])
-            r_peaks.append(start + local_max)
-    return np.array(r_peaks)
+# =====================================================================
+# CẬP NHẬT: Thêm tham số external_threshold và return_threshold
+# =====================================================================
+
 
 def detect_PPG_beats(ppg_signal):
     peaks, _ = find_peaks(ppg_signal, height=0.3, distance=int(0.5 * fs))
     rr_intervals = np.diff(peaks) / fs
     return rr_intervals
 
-def detect_ECG_beats(ecg_signal):
-    r_indices = pan_tompkins_qrs(ecg_signal)
+# =====================================================================
+# CẬP NHẬT: Thêm tham số gt_threshold để truyền xuống Pan-Tompkins
+# =====================================================================
+def detect_ECG_beats(ecg_signal, gt_threshold=None):
+    r_indices = pan_tompkins_qrs(ecg_signal, external_threshold=gt_threshold)
     rr_intervals = np.diff(r_indices) / fs
     return rr_intervals
 
-def load_data_and_extract_features(datapath="datasets/total_train.npz", output_name="detect_af_MIMIC_train.npz"):
+# =====================================================================
+# CẬP NHẬT: Thêm tham số dataset_origin vào signature
+# =====================================================================
+def load_data_and_extract_features(dataset_origin, datapath, output_name):
     
     if not os.path.exists(datapath):
         print(f"Error: Can not find a file in {datapath}")
         return
+    if not os.path.exists(dataset_origin):
+        print(f"Error: Can not find a file in {dataset_origin}")
+        return
 
-    print(f"--- Loading files {datapath} ---")
+    print(f"--- Loading Ground Truth files from {dataset_origin} ---")
+    data_origin = np.load(dataset_origin, allow_pickle=True)
+    ecgs_origin = data_origin["ecgs"]
+
+    print(f"--- Loading Reconstructed files from {datapath} ---")
     data = np.load(datapath, allow_pickle=True)
     ecgs = data["ecgs"]
     labels = data["labels"]
@@ -83,10 +74,16 @@ def load_data_and_extract_features(datapath="datasets/total_train.npz", output_n
 
     for index in tqdm(range(len(ecgs))):
         signal = ecgs[index]
+        gt_signal = ecgs_origin[index]
         
-        rr_intervals = detect_ECG_beats(signal)
+        # BƯỚC MỚI: Tính Threshold chuẩn từ Ground Truth
+        _, gt_threshold = pan_tompkins_qrs(gt_signal, return_threshold=True)
         
-        p_ratio = get_p_ratio(signal, fs=fs)
+        # BƯỚC MỚI: Truyền Threshold chuẩn vào hàm lấy RR-Interval
+        rr_intervals = detect_ECG_beats(signal, gt_threshold=gt_threshold)
+        
+        # BƯỚC MỚI: Nhớ sửa hàm get_p_ratio trong file p_wave_detection.py để nhận gt_threshold nhé!
+        p_ratio = get_p_ratio(signal, fs=fs, gt_threshold=gt_threshold)
         
         if rr_intervals is None or len(rr_intervals) < 3:
             features["tpr"].append(0.0)
@@ -137,7 +134,9 @@ def load_data_and_extract_features(datapath="datasets/total_train.npz", output_n
 
 if __name__ == "__main__":
     set_seed(42)
+    # Đã sửa lại lỗi cú pháp khi gọi hàm
     load_data_and_extract_features(
-        datapath="/home/linhhima/PPG_ECG/datasets/z_score_norm/total_mimic_af.npz",
-        output_name="/home/linhhima/PPG_ECG/AF_Detection/total_mimic_af.npz"
+        dataset_origin="/home/linhhima/PPG_ECG/datasets/z_score_norm/total_mimic_af.npz",
+        datapath="/home/linhhima/PPG_ECG/AF_Detection/total_mimic_af_flow_subject.npz",
+        output_name="/home/linhhima/PPG_ECG/AF_Detection/total_mimic_af_flow_subject_1.npz"
     )

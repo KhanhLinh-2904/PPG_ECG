@@ -2,18 +2,17 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
-from model import NeuralNetwork
+from model import FocusedNeuralNetwork # ĐÃ SỬA: Import model mới
 from sklearn.metrics import roc_curve, auc
 import matplotlib.pyplot as plt
 from sklearn.metrics import precision_recall_curve, average_precision_score
 
 # ----------- Configuration -----------
-CHECKPOINT_PATH = "/home/linhhima/PPG_ECG/AF_Detection/new_checkpoints/best_model.pth"
-TEST_DATA_PATH = "/home/linhhima/PPG_ECG/AF_Detection/total_mimic_af_z_score_recon.npz"
+CHECKPOINT_PATH = "/home/linhhima/PPG_ECG/AF_Detection/new_checkpoints_2branch/best_model.pth"
+TEST_DATA_PATH = "/home/linhhima/PPG_ECG/AF_Detection/total_mimic_af_flow_segment_1.npz"
 # TEST_DATA_PATH = "AF_Detection/detect_af_deepbeat.npz"
 # TEST_DATA_PATH = "/home/linhhima/PPG_ECG/AF_Detection/detect_af_MIMIC_AF.npz"
 # TEST_DATA_PATH = "/home/linhhima/PPG_ECG/AF_Detection/detect_af_MIMIC_no_rec.npz"
-
 
 BATCH_SIZE = 32
 
@@ -24,11 +23,23 @@ y_test = torch.tensor(test_data['y'], dtype=torch.long)
 test_dataset = TensorDataset(X_test, y_test)
 test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE)
 
+# Kiểm tra kích thước đầu vào (Nên in ra để đảm bảo là [Batch, 4])
+print(f"Shape of X_test: {X_test.shape}") 
+
 # ----------- Load Model -----------
 num_classes = len(torch.unique(y_test))
 assert num_classes == 2, "This code assumes binary classification (2 classes)."
-model = NeuralNetwork(num_classes=num_classes)
-model.load_state_dict(torch.load(CHECKPOINT_PATH))
+
+# ĐÃ SỬA: Khởi tạo bằng Model mới
+model = FocusedNeuralNetwork(num_classes=num_classes)
+
+# Load checkpoint (Thêm weights_only=True để an toàn nếu dùng PyTorch bản mới)
+try:
+    model.load_state_dict(torch.load(CHECKPOINT_PATH, weights_only=True))
+except TypeError:
+    # Fallback cho các bản PyTorch cũ hơn
+    model.load_state_dict(torch.load(CHECKPOINT_PATH))
+    
 model.eval()
 
 # ----------- Evaluation -----------
@@ -41,13 +52,20 @@ all_labels = []
 all_probs = []
 # Initialize counters
 TP = TN = FP = FN = 0
+
+# Test trên CPU hoặc GPU nếu có (an toàn)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model.to(device)
+
 with torch.no_grad():
     for inputs, labels in test_loader:
+        inputs, labels = inputs.to(device), labels.to(device) # Chuyển data vào device
         outputs = model(inputs)
         probs = torch.softmax(outputs, dim=1)[:, 1]  # Probability for class 1 (positive)
 
-        all_labels.extend(labels.numpy())
-        all_probs.extend(probs.numpy())
+        # Trả data về CPU trước khi gọi numpy()
+        all_labels.extend(labels.cpu().numpy())
+        all_probs.extend(probs.cpu().numpy())
 
         loss = criterion(outputs, labels)
         test_loss += loss.item() * inputs.size(0)
@@ -56,7 +74,7 @@ with torch.no_grad():
         total += labels.size(0)
         correct += (predicted == labels).sum().item()
 
-        for p, l in zip(predicted, labels):
+        for p, l in zip(predicted.cpu().numpy(), labels.cpu().numpy()):
             if l == 1 and p == 1:
                 TP += 1
             elif l == 0 and p == 0:
@@ -88,6 +106,7 @@ print(f"Specificity: {specificity:.4f}")
 # Compute ROC curve and AUROC
 fpr, tpr, thresholds = roc_curve(all_labels, all_probs)
 roc_auc = auc(fpr, tpr)
+print(f"AUROC: {roc_auc:.4f}")
 
 # # Plotting
 # plt.figure()

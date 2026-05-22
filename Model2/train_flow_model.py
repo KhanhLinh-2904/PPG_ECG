@@ -11,12 +11,14 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from torch.cuda.amp import autocast, GradScaler
 from tqdm import tqdm
+import matplotlib.pyplot as plt  # <--- THÊM THƯ VIỆN VẼ BIỂU ĐỒ
 
 # Import các hàm và Model của Stage 1
 from load_data import LoadData
 from ecg2ecg import ECGAutoencoder, ECGAEConfig
 from ppg2ecg import PPG2ECGModel, PPG2ECGConfig
 from flow_model import LatentRectifiedFlow
+
 # ============================================================
 # 1. CẤU HÌNH CHO GIAI ĐOẠN 2 (STAGE 2 CONFIG)
 # ============================================================
@@ -25,8 +27,8 @@ class Stage2TrainConfig:
     seed: int = 42
     
     # Data paths
-    train_path: str = "/home/linhhima/Diffusion datasets/combined_segment_split_train.npz"
-    val_path: str = "/home/linhhima/Diffusion datasets/combined_segment_split_val.npz"
+    train_path: str = "/home/linhhima/Diffusion_datasets/combined_train.npz"
+    val_path: str = "/home/linhhima/Diffusion_datasets/combined_val.npz"
 
     # Trọng số của Stage 1 (Phải chạy xong Giai đoạn 1 mới có)
     ecg_checkpoint_path: str = "/home/linhhima/PPG_ECG/saved_models_ecg_vae/best_ecg_autoencoder.pth" 
@@ -35,9 +37,10 @@ class Stage2TrainConfig:
     # Đường dẫn lưu mô hình Stage 2
     save_dir: str = "saved_models_flow"
     best_model_name: str = "best_rectified_flow.pth"
+    plot_name: str = "flow_loss_curve.png"  # <--- THÊM TÊN FILE HÌNH ẢNH BIỂU ĐỒ
 
     # Training Params cho Rectified Flow
-    batch_size: int = 128  # Giữ nguyên batch size 256 như bạn yêu cầu
+    batch_size: int = 128  # Giữ nguyên batch size 128
     epochs: int = 300
     num_workers: int = 4
     lr: float = 2e-4       # Learning rate cho Flow
@@ -61,8 +64,6 @@ CFG = Stage2TrainConfig()
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 os.makedirs(CFG.save_dir, exist_ok=True)
 
-
-
 # ============================================================
 # 3. UTILS & DATA LOADER
 # ============================================================
@@ -84,22 +85,42 @@ def get_dataloaders():
     )
     return train_loader, val_loader
 
+# ---- HÀM VẼ VÀ LƯU BIỂU ĐỒ ----
+def plot_flow_losses(train_losses, val_losses, save_dir, filename):
+    plt.figure(figsize=(10, 6))
+    epochs = range(1, len(train_losses) + 1)
+    
+    plt.plot(epochs, train_losses, label="Train MSE", color="blue", linewidth=2)
+    plt.plot(epochs, val_losses, label="Val MSE", color="red", linewidth=2, linestyle="--")
+    
+    plt.title("Latent Rectified Flow - Training & Validation MSE", fontsize=14, fontweight="bold")
+    plt.xlabel("Epochs", fontsize=12)
+    plt.ylabel("MSE Loss", fontsize=12)
+    plt.grid(True, linestyle=":", alpha=0.6)
+    plt.legend(fontsize=12)
+    
+    plot_path = os.path.join(save_dir, filename)
+    plt.savefig(plot_path, bbox_inches="tight", dpi=300)
+    plt.close()
+    print(f"\n[+] Đã vẽ và lưu biểu đồ Loss tại: {plot_path}")
+
 # ============================================================
 # 4. LOAD FROZEN STAGE 1 MODELS
 # ============================================================
 def load_frozen_stage1():
     print("[*] Đang tải và đóng băng các mô hình Stage 1 (ECG Teacher & PPG Encoder)...")
     
-    # Khởi tạo Config (Chỉ lấy phần cấu hình cơ bản, bỏ qua tham số loss)
+    # Khởi tạo Config
     ecg_cfg = ECGAEConfig(
         input_length=CFG.input_length, in_channels=1, dims=CFG.dims, depths=CFG.depths,
         latent_channels=CFG.latent_channels, latent_length=CFG.latent_length,
         attn_heads=8, attn_dropout=0.0, global_latent_dim=128, trend_poly=2
     )
+    # ĐÃ XÓA proj_dim ĐỂ KHỚP VỚI PPG2ECGConfig MỚI
     ppg_cfg = PPG2ECGConfig(
         input_length=CFG.input_length, ppg_in_channels=1, dims=CFG.dims, depths=CFG.depths,
         latent_channels=CFG.latent_channels, latent_length=CFG.latent_length,
-        attn_heads=8, attn_dropout=0.0, use_derivatives=True, proj_dim=128
+        attn_heads=8, attn_dropout=0.0, use_derivatives=True
     )
 
     # 1. Load ECG Teacher
@@ -139,7 +160,7 @@ def train_one_epoch(flow_model, ecg_ae, ppg_model, optimizer, scaler, dataloader
         with torch.no_grad():
             feat_ecg = ecg_ae.encoder(ecg)
             z_ecg = ecg_ae.latent_head(feat_ecg)   # Target
-           
+            
             feat_ppg = ppg_model.ppg_encoder(ppg)
             z_ppg = ppg_model.ppg_latent_head(feat_ppg) # Condition
 
@@ -148,7 +169,7 @@ def train_one_epoch(flow_model, ecg_ae, ppg_model, optimizer, scaler, dataloader
         
         # t ~ Uniform(0, 1)
         t = torch.rand((B,), device=DEVICE)
-        t_expand = t.view(B, 1, 1) # [B, 1, 1] để nhân với latent [B, C, L]
+        t_expand = t.view(B, 1, 1) # [B, 1, 1]
         
         # Đường đi nội suy tuyến tính: x_t = t * z_ecg + (1 - t) * z0
         xt = t_expand * z_ecg + (1.0 - t_expand) * z0
@@ -175,7 +196,6 @@ def train_one_epoch(flow_model, ecg_ae, ppg_model, optimizer, scaler, dataloader
         loop.set_postfix(MSE=f"{loss.item():.5f}")
 
     return total_loss / len(dataloader)
-
 
 @torch.no_grad()
 def val_one_epoch(flow_model, ecg_ae, ppg_model, dataloader):
@@ -237,6 +257,10 @@ def main():
     bad_epochs = 0
     save_path = os.path.join(CFG.save_dir, CFG.best_model_name)
 
+    # ---- KHỞI TẠO DANH SÁCH LƯU LOSS QUÁ CÁC EPOCH ----
+    train_losses = []
+    val_losses = []
+
     print("\n" + "="*50)
     print("[*] BẮT ĐẦU HUẤN LUYỆN GIAI ĐOẠN 2: LATENT RECTIFIED FLOW")
     print("="*50 + "\n")
@@ -245,6 +269,10 @@ def main():
         
         train_mse = train_one_epoch(flow_model, ecg_ae, ppg_model, optimizer, scaler, train_loader, epoch)
         val_mse = val_one_epoch(flow_model, ecg_ae, ppg_model, val_loader)
+
+        # ---- LƯU LẠI GIÁ TRỊ VÀO LIST ----
+        train_losses.append(train_mse)
+        val_losses.append(val_mse)
 
         scheduler.step(val_mse)
 
@@ -264,6 +292,9 @@ def main():
         if bad_epochs >= CFG.patience:
             print(f"\n[!] Kích hoạt Early Stopping tại epoch {epoch}.")
             break
+
+    # ---- GỌI HÀM VẼ BIỂU ĐỒ KHI KẾT THÚC ----
+    plot_flow_losses(train_losses, val_losses, CFG.save_dir, CFG.plot_name)
 
 if __name__ == "__main__":
     main()

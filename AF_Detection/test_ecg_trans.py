@@ -48,7 +48,12 @@ coral_model_path = '/home/linhhima/PPG_ECG/AF_Detection/checkpoints/coral_knn_ch
 test_files = {
     # "MIT-BIH": '/home/linhhima/PPG_ECG/datasets/min_max_norm/MIT_BIH_test_segments.npz',
     # "Total z (MIMIC AF)": '/home/linhhima/PPG_ECG/datasets/min_max_norm/total_mimic_af_min_max.npz',
-    "Recon ECG MIMIC AF": '/home/linhhima/PPG_ECG/AF_Detection/total_mimic_af_recon.npz',
+    "total_mimic_af_flow": '/home/linhhima/PPG_ECG/AF_Detection/total_mimic_af_flow.npz',
+    "total_mimic_af_flow_subject": '/home/linhhima/PPG_ECG/AF_Detection/total_mimic_af_flow_subject.npz',
+    "total_mimic_af_ppg2ecg": '/home/linhhima/PPG_ECG/AF_Detection/total_mimic_af_ppg2ecg.npz',
+    "total_mimic_af_ppg2ecg_subject": '/home/linhhima/PPG_ECG/AF_Detection/total_mimic_af_ppg2ecg_subject.npz',
+
+
     # "Deepbeat Recon": '/home/linhhima/PPG_ECG/AF_Detection/deepbeat_ecg_reconstructions.npz'
 }
 
