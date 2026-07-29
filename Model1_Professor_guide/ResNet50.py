@@ -4,7 +4,7 @@ import torch.nn.functional as F
 import random
 import numpy as np
 
-ECG_INPUT_LENGTH = 800
+ECG_INPUT_LENGTH = 2400
 OUTPUT_EMBED_DIM = 128  
 LAYERS = [3, 4, 6, 3] 
 BASE_WIDTH = 64

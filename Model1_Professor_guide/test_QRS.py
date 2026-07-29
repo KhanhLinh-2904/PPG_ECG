@@ -7,12 +7,11 @@ from tqdm import tqdm
 import random
 import os
 
-# Import từ thư viện của bạn
 from load_data import LoadData
 from CLIP import ECG_PPG_Fusion_Model 
 
 # ==========================================
-# 1. CẤU HÌNH (CONFIGURATIONS)
+# 1.(CONFIGURATIONS)
 # ==========================================
 SEED = 40
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -24,12 +23,10 @@ TEST_DATA_PATH = '/home/linhhima/Diffusion_datasets/combined_segment_split_test.
 CLIP_MODEL_PATH = '/home/linhhima/PPG_ECG/best_multitask_model.pth'
 
 SAMPLING_RATE = 125 # Hz
-LEFT_WINDOW_MS = 250  # Lùi về trước 250ms để lấy sóng P
-RIGHT_WINDOW_MS = 400 # Tiến về sau 400ms để lấy sóng T
+LEFT_WINDOW_MS = 250  # 250ms P wave
+RIGHT_WINDOW_MS = 400 # 400ms T wave
 
-# ==========================================
-# 2. CÁC HÀM TIỆN ÍCH
-# ==========================================
+
 def set_seed(seed):
     random.seed(seed)
     np.random.seed(seed)
@@ -46,7 +43,6 @@ def load_model():
     return model
 
 def pan_tompkins_qrs(ecg_signal: np.ndarray, fs: int = 125):
-    """Tìm đỉnh R chuẩn từ tín hiệu Ground Truth"""
     ecg_signal = np.array(ecg_signal).flatten()
     nyq = 0.5 * fs
     b, a = butter(1, [5.0 / nyq, 15.0 / nyq], btype='band')
@@ -75,14 +71,12 @@ def pan_tompkins_qrs(ecg_signal: np.ndarray, fs: int = 125):
     return np.array(r_peaks)
 
 def extract_heartbeats(ecg_signal: np.ndarray, r_peaks: np.ndarray, fs: int, left_ms: int, right_ms: int):
-    """Cắt các cụm P-QRS-T xung quanh đỉnh R chuẩn"""
     ecg_signal = np.array(ecg_signal).flatten()
     left_samples = int((left_ms / 1000.0) * fs)
     right_samples = int((right_ms / 1000.0) * fs)
     
     heartbeats = []
     for r in r_peaks:
-        # Đảm bảo cửa sổ cắt không bị tràn ra ngoài mảng
         if r - left_samples >= 0 and r + right_samples < len(ecg_signal):
             beat = ecg_signal[r - left_samples : r + right_samples]
             heartbeats.append(beat)
@@ -90,7 +84,6 @@ def extract_heartbeats(ecg_signal: np.ndarray, r_peaks: np.ndarray, fs: int, lef
     return np.array(heartbeats)
 
 def calculate_complex_metrics(true_complex, pred_complex):
-    """Tính RMSE và Pearson cho 1 cặp nhịp tim tương ứng"""
     # 1. RMSE
     rmse = np.sqrt(np.mean((true_complex - pred_complex) ** 2))
     
@@ -98,7 +91,6 @@ def calculate_complex_metrics(true_complex, pred_complex):
     std_true = np.std(true_complex)
     std_pred = np.std(pred_complex)
     
-    # Tránh chia cho 0 nếu tín hiệu là đường thẳng (flat)
     if std_true < 1e-6 or std_pred < 1e-6:
         pearson = 0.0 
     else:
@@ -107,17 +99,16 @@ def calculate_complex_metrics(true_complex, pred_complex):
     return rmse, pearson
 
 # ==========================================
-# 3. HÀM CHÍNH: ĐÁNH GIÁ TOÀN BỘ DATASET
+# 3. Main for DATASET
 # ==========================================
 def run_all_complex_evaluation():
     set_seed(SEED)
     model = load_model()
     
-    # Các biến cộng dồn
     total_rmse = 0.0
     total_pearson = 0.0
-    total_valid_beats = 0       # Tổng số nhịp tim (beats) đã xử lý
-    total_segments_processed = 0 # Tổng số đoạn tín hiệu (segments) đã xử lý
+    total_valid_beats = 0       
+    total_segments_processed = 0 
     
     try:
         test_dataset = LoadData(TEST_DATA_PATH)
@@ -126,14 +117,13 @@ def run_all_complex_evaluation():
         print(f"Error loading dataset: {e}")
         return
 
-    print("[*] Bắt đầu trích xuất TẤT CẢ nhịp tim từ TẤT CẢ các Segments...")
+    print("[*] Starting extraction of ALL heartbeats from ALL Segments...")
     
     with torch.no_grad():
         for batch_idx, batch_data in enumerate(tqdm(test_loader, desc="Evaluating Beats")):
             ecg = batch_data[0].float().unsqueeze(1).to(DEVICE) if batch_data[0].dim() == 2 else batch_data[0].float().to(DEVICE)
             ppg = batch_data[1].float().unsqueeze(1).to(DEVICE) if batch_data[1].dim() == 2 else batch_data[1].float().to(DEVICE)
             
-            # Dự đoán ECG
             _, _, predicted_ecg = model(ecg, ppg)
 
             ecg_true_np = ecg.cpu().squeeze().numpy()
@@ -142,48 +132,48 @@ def run_all_complex_evaluation():
             ecg_true_np = np.atleast_2d(ecg_true_np)
             ecg_pred_np = np.atleast_2d(ecg_pred_np)
 
-            # Quét qua từng đoạn segment trong Batch
+            # Scan through each segment in the Batch
             for b in range(ecg_true_np.shape[0]):
                 total_segments_processed += 1
                 true_s = ecg_true_np[b]
                 pred_s = ecg_pred_np[b]
 
-                # BƯỚC 1: Lấy các đỉnh R chuẩn từ ECG Ground Truth
+                # STEP 1: Get standard R peaks from ECG Ground Truth
                 anchor_r_peaks = pan_tompkins_qrs(true_s, fs=SAMPLING_RATE)
 
                 if len(anchor_r_peaks) == 0:
-                    continue # Bỏ qua segment nếu không tìm thấy nhịp tim nào
+                    continue # Skip segment if no heartbeat is found
 
-                # BƯỚC 2: Dùng chung anchor_r_peaks để trích xuất nhịp tim cho cả 2 tín hiệu
-                # Đảm bảo true_beats và pred_beats khớp nhau 100% về khung thời gian
+                # STEP 2: Use the same anchor_r_peaks to extract heartbeats for both signals
+                # Ensure true_beats and pred_beats are 100% aligned in timeframe
                 true_beats = extract_heartbeats(true_s, anchor_r_peaks, SAMPLING_RATE, LEFT_WINDOW_MS, RIGHT_WINDOW_MS)
                 pred_beats = extract_heartbeats(pred_s, anchor_r_peaks, SAMPLING_RATE, LEFT_WINDOW_MS, RIGHT_WINDOW_MS)
 
-                # BƯỚC 3: Tính toán chỉ số cho TỪNG NHỊP TIM (Beat) trong Segment
+                # STEP 3: Calculate metrics for EACH HEARTBEAT in the Segment
                 for true_complex, pred_complex in zip(true_beats, pred_beats):
                     rmse_val, pearson_val = calculate_complex_metrics(true_complex, pred_complex)
                     
-                    # Cộng dồn
+                    # Accumulate
                     total_rmse += rmse_val
                     total_pearson += pearson_val
                     total_valid_beats += 1
 
-    # IN BÁO CÁO KẾT QUẢ CUỐI CÙNG
+    # PRINT FINAL RESULTS REPORT
     if total_valid_beats > 0:
         avg_rmse = total_rmse / total_valid_beats
         avg_pearson = total_pearson / total_valid_beats
         
         print(f"\n{'='*60}")
-        print(f"BÁO CÁO ĐÁNH GIÁ HÌNH THÁI (MORPHOLOGY) - TẤT CẢ CÁC NHỊP")
+        print(f"MORPHOLOGY EVALUATION REPORT - ALL BEATS")
         print(f"{'='*60}")
-        print(f"Tổng số Segments đã quét        : {total_segments_processed:,}")
-        print(f"Tổng số Beats hợp lệ trích xuất : {total_valid_beats:,}")
+        print(f"Total Segments scanned        : {total_segments_processed:,}")
+        print(f"Total valid Beats extracted   : {total_valid_beats:,}")
         print(f"------------------------------------------------------------")
-        print(f"Average RMSE (trên mỗi Beat)    : {avg_rmse:.4f}")
-        print(f"Average Pearson (trên mỗi Beat) : {avg_pearson:.4f}")
+        print(f"Average RMSE (per Beat)       : {avg_rmse:.4f}")
+        print(f"Average Pearson (per Beat)    : {avg_pearson:.4f}")
         print(f"{'='*60}")
     else:
-        print("\n[!] Không tìm thấy cụm P-QRS-T hợp lệ nào để đánh giá.")
+        print("\n[!] No valid P-QRS-T complexes found for evaluation.")
 
 if __name__ == "__main__":
     run_all_complex_evaluation()

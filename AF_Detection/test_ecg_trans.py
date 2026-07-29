@@ -46,11 +46,11 @@ pretrained_path = '/home/linhhima/PPG_ECG/AF_Detection/checkpoints/pretrained_ba
 coral_model_path = '/home/linhhima/PPG_ECG/AF_Detection/checkpoints/coral_knn_checkpoint.pkl'
 
 test_files = {
-    # "MIT-BIH": '/home/linhhima/PPG_ECG/datasets/min_max_norm/MIT_BIH_test_segments.npz',
-    # "Total z (MIMIC AF)": '/home/linhhima/PPG_ECG/datasets/min_max_norm/total_mimic_af_min_max.npz',
-    "total_mimic_af_flow": '/home/linhhima/PPG_ECG/AF_Detection/total_mimic_af_flow.npz',
+    "MIT-BIH": '/home/linhhima/PPG_ECG/datasets/z_score_norm/MIT_BIH_test_segments.npz',
+    "Total z (MIMIC AF)": '/home/linhhima/PPG_ECG/datasets/z_score_norm/total_mimic_af.npz',
+    "total_mimic_af_flow": '/home/linhhima/PPG_ECG/AF_Detection/total_mimic_af_flow_segment.npz',
     "total_mimic_af_flow_subject": '/home/linhhima/PPG_ECG/AF_Detection/total_mimic_af_flow_subject.npz',
-    "total_mimic_af_ppg2ecg": '/home/linhhima/PPG_ECG/AF_Detection/total_mimic_af_ppg2ecg.npz',
+    "total_mimic_af_ppg2ecg": '/home/linhhima/PPG_ECG/AF_Detection/total_mimic_af_ppg2ecg_segment.npz',
     "total_mimic_af_ppg2ecg_subject": '/home/linhhima/PPG_ECG/AF_Detection/total_mimic_af_ppg2ecg_subject.npz',
 
 

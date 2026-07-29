@@ -18,7 +18,7 @@ BATCH_SIZE = 64
 INPUT_LENGTH = 2400
 OUTPUT_EMBED_DIM = 128
 SEQ_LENGTH = 2400
-TEST_DATA_PATH = '/home/linhhima/PPG_ECG/datasets/z_score_norm/total_mimic_af.npz'
+TEST_DATA_PATH = '/home/linhhima/Diffusion_datasets/combined_segment_split_test.npz'
 CLIP_MODEL_PATH = '/home/linhhima/PPG_ECG/best_multitask_model_segment.pth'
 
 def set_seed(seed):
@@ -29,31 +29,23 @@ def set_seed(seed):
         torch.cuda.manual_seed_all(seed)
 
 def pan_tompkins_qrs(ecg_signal: np.ndarray, fs: int = 125, external_threshold: float = None, return_threshold: bool = False):
-    """
-    Thuật toán Pan-Tompkins đã chỉnh sửa để nhận/trả ngưỡng.
-    """
+   
     ecg_signal = np.array(ecg_signal).flatten()
     
-    # 1. Bandpass Filter
     nyq = 0.5 * fs
     low = 5.0 / nyq
     high = 15.0 / nyq
     b, a = butter(1, [low, high], btype='band')
     filtered_ecg = filtfilt(b, a, ecg_signal)
     
-    # 2. Derivative
     diff_ecg = np.diff(filtered_ecg)
     diff_ecg = np.insert(diff_ecg, 0, diff_ecg[0])
     
-    # 3. Squaring
     squared_ecg = diff_ecg ** 2
     
-    # 4. Moving Window Integration
     window_width = int(0.15 * fs)
     integrated_ecg = np.convolve(squared_ecg, np.ones(window_width) / window_width, mode='same')
     
-    # 5. THRESHOLDING
-    # Nếu có truyền ngưỡng từ ngoài vào thì dùng nó, nếu không thì tự tính trung bình
     if external_threshold is not None:
         threshold = external_threshold
     else:
@@ -62,7 +54,6 @@ def pan_tompkins_qrs(ecg_signal: np.ndarray, fs: int = 125, external_threshold: 
     min_distance = int(0.3 * fs)
     peaks_integrated, _ = find_peaks(integrated_ecg, height=threshold, distance=min_distance)
     
-    # 6. Back-search
     r_peaks = []
     search_window = int(0.05 * fs)
     
@@ -73,28 +64,20 @@ def pan_tompkins_qrs(ecg_signal: np.ndarray, fs: int = 125, external_threshold: 
             local_max = np.argmax(ecg_signal[start:end])
             r_peaks.append(start + local_max)
             
-    # Trả về cả đỉnh R và cái ngưỡng đã dùng (nếu được yêu cầu)
     if return_threshold:
         return np.array(r_peaks), threshold
     
     return np.array(r_peaks)
 
 def calculate_peak_count_ratio(true_s: np.ndarray, pred_s: np.ndarray, sampling_rate=125):
-    """
-    Đếm số lượng đỉnh R bằng thuật toán Pan-Tompkins và tính tỷ lệ.
-    ĐÃ SỬA: Ép Predicted ECG phải dùng ngưỡng tính được từ Ground Truth.
-    """
-    # 1. Tìm đỉnh R của Ground Truth và TRÍCH XUẤT NGƯỠNG (gt_threshold)
+   
     true_peaks, gt_threshold = pan_tompkins_qrs(true_s, fs=sampling_rate, return_threshold=True)
     
-    # 2. Truyền ngưỡng của Ground Truth cho Predicted ECG
     pred_peaks = pan_tompkins_qrs(pred_s, fs=sampling_rate, external_threshold=gt_threshold, return_threshold=False)
     
-    # 3. Đếm tổng số đỉnh
     num_true = len(true_peaks)
     num_pred = len(pred_peaks)
     
-    # 4. Tính tỷ lệ dự đoán so với thực tế (Prediction Ratio)
     if num_true > 0:
         ratio = num_pred / num_true
     else:
@@ -137,9 +120,9 @@ def save_ecg_reconstruction(output_path="AF_Detection/ecg_reconstructions.npz"):
     with torch.no_grad():
         for i, (ecg, ppg, record_names, label) in enumerate(test_loader):
             ppg_input = ppg.to(DEVICE).float().unsqueeze(1)
-            ecg_input = ecg.to(DEVICE).float().unsqueeze(1)
+            # ecg_input = ecg.to(DEVICE).float().unsqueeze(1)
 
-            _,_,predicted_ecg = model(ecg_input,ppg_input)
+            predicted_ecg = model(None,ppg_input)
             
             all_predicted_ecgs.append(predicted_ecg.squeeze(1).cpu().numpy())
             all_original_ppgs.append(ppg.cpu().numpy())
@@ -158,7 +141,6 @@ def save_ecg_reconstruction(output_path="AF_Detection/ecg_reconstructions.npz"):
     print(f"Saved reconstructions to {output_path}")
 
 def get_integrated_energy(signal, fs=125):
-    """Hàm phụ trợ tính năng lượng tích phân để vẽ đường Threshold"""
     nyq = 0.5 * fs
     b, a = butter(1, [5.0 / nyq, 15.0 / nyq], btype='band')
     filtered = filtfilt(b, a, signal)
@@ -172,7 +154,6 @@ def get_integrated_energy(signal, fs=125):
 def visualize_results(ppg, ecg_true, ecg_pred, record_name, fs=125):
     print(f"Visualizing Record: {record_name}")
     
-    # 1. Lấy thông tin đỉnh R và Threshold
     true_peaks, gt_thresh = pan_tompkins_qrs(ecg_true, fs=fs, return_threshold=True)
     pred_peaks = pan_tompkins_qrs(ecg_pred, fs=fs, external_threshold=gt_thresh, return_threshold=False)
     
@@ -180,7 +161,6 @@ def visualize_results(ppg, ecg_true, ecg_pred, record_name, fs=125):
     num_pred = len(pred_peaks)
     ratio = (num_pred / num_true * 100) if num_true > 0 else 0.0
 
-    # Tính tín hiệu năng lượng
     int_true = get_integrated_energy(ecg_true, fs)
     int_pred = get_integrated_energy(ecg_pred, fs)
 
@@ -194,14 +174,14 @@ def visualize_results(ppg, ecg_true, ecg_pred, record_name, fs=125):
         fontsize=15, fontweight='bold'
     )
 
-    # --- Hàng 1: Input PPG ---
+    # --- 1: Input PPG ---
     plt.subplot(5, 1, 1)
     plt.plot(t_ppg, ppg, color='green', label='Input PPG')
     plt.title("Input PPG Signal")
     plt.grid(True, alpha=0.3)
     plt.legend(loc='upper right')
 
-    # --- Hàng 2: Ground Truth ECG + R-Peaks ---
+    # ---  2: Ground Truth ECG + R-Peaks ---
     plt.subplot(5, 1, 2)
     plt.plot(t_ecg, ecg_true, color='blue', label='Ground Truth ECG')
     if num_true > 0:
@@ -210,7 +190,7 @@ def visualize_results(ppg, ecg_true, ecg_pred, record_name, fs=125):
     plt.grid(True, alpha=0.3)
     plt.legend(loc='upper right')
 
-    # --- Hàng 3: Predicted ECG + R-Peaks ---
+    # ---  3: Predicted ECG + R-Peaks ---
     plt.subplot(5, 1, 3)
     plt.plot(t_ecg, ecg_pred, color='red', label='Predicted ECG')
     if num_pred > 0:
@@ -219,18 +199,17 @@ def visualize_results(ppg, ecg_true, ecg_pred, record_name, fs=125):
     plt.grid(True, alpha=0.3)
     plt.legend(loc='upper right')
 
-    # --- Hàng 4: Comparison - Integrated Energy & Threshold ---
+    # ---  4: Comparison - Integrated Energy & Threshold ---
     ax_energy = plt.subplot(5, 1, 4)
     
-    # Năng lượng của Ground Truth
+    # Energy of Ground Truth
     ax_energy.plot(t_ecg, int_true, color='gray', alpha=0.6, label='GT Integrated Energy')
-    # Năng lượng của Predicted
+    # Energy of Predicted
     ax_energy.plot(t_ecg, int_pred, color='dodgerblue', alpha=0.6, label='Pred Integrated Energy')
     
-    # Đường Threshold
+    #  Threshold
     ax_energy.axhline(y=gt_thresh, color='green', linestyle='-.', linewidth=2, label=f'Threshold ({gt_thresh:.4f})')
     
-    # Thêm text Box cho Ratio
     ax_energy.text(0.01, 0.85, f'Ratio: {ratio:.1f}%', transform=ax_energy.transAxes, 
              fontsize=12, fontweight='bold', color='darkred',
              bbox=dict(facecolor='white', alpha=0.8, edgecolor='gray'))
@@ -240,7 +219,7 @@ def visualize_results(ppg, ecg_true, ecg_pred, record_name, fs=125):
     ax_energy.grid(True, alpha=0.3)
     ax_energy.legend(loc='upper right')
 
-    # --- Hàng 5: Comparison - Raw ECG Overlap ---
+    # ---  5: Comparison - Raw ECG Overlap ---
     plt.subplot(5, 1, 5)
     plt.plot(t_ecg, ecg_true, color='black', label='Ground Truth', alpha=0.7, linewidth=1.5)
     plt.plot(t_ecg, ecg_pred, color='red', label='Predicted', linestyle='--', alpha=0.8, linewidth=1.5)
@@ -256,19 +235,15 @@ def visualize_results(ppg, ecg_true, ecg_pred, record_name, fs=125):
     plt.grid(True, alpha=0.3)
     plt.legend(loc='upper left')
 
-    # Căn chỉnh layout
     plt.tight_layout(rect=[0, 0.03, 1, 0.96])
     
-    # Hiển thị
     plt.show() 
 
-# --- HÀM ĐÃ ĐƯỢC CẬP NHẬT ---
 def run_visualization():
     set_seed(SEED)
     model = load_model()
     seen_records = set()
     
-    # --- 1. Định nghĩa danh sách các bản ghi mục tiêu ---
     target_records = {
         "dalia_S11", 
         "wesad_S14", 
@@ -279,7 +254,6 @@ def run_visualization():
 
     try:
         test_dataset = LoadData(TEST_DATA_PATH)
-        # Giữ nguyên shuffle=True để quét qua toàn bộ dataset nhanh hơn
         test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=True)
     except Exception as e:
         print(f"Error: {e}")
@@ -300,7 +274,6 @@ def run_visualization():
             for idx in range(ppg_np.shape[0]):
                 current_rec_name = record_names[idx]
                 
-                # --- 2. Kiểm tra điều kiện: Phải là bản ghi mục tiêu và chưa được hiển thị ---
                 if current_rec_name in target_records and current_rec_name not in seen_records:
                     visualize_results(
                         ppg_np[idx], 
@@ -310,9 +283,8 @@ def run_visualization():
                     )
                     seen_records.add(current_rec_name)
                     
-                    # --- 3. Dừng chương trình nếu đã hiển thị đủ tất cả các bản ghi mục tiêu ---
                     if len(seen_records) == len(target_records):
-                        print("\n[*] Đã tìm thấy và hiển thị đủ tất cả các record mục tiêu. Hoàn tất!")
+                        print("\n[*] Complete!")
                         return
 
 
@@ -358,7 +330,7 @@ def run_visualization():
 #     model = load_model()
 #     seen_records = set()
     
-#     # --- THÊM DANH SÁCH CÁC RECORD BẠN MUỐN HIỂN THỊ ---
+#     # --- ADD THE LIST OF RECORDS YOU WANT TO VISUALIZE ---
 #     target_records = {
 #         "dalia_S11", 
 #         "capno_0028_8min", 
@@ -369,7 +341,7 @@ def run_visualization():
 
 #     try:
 #         test_dataset = LoadData(TEST_DATA_PATH)
-#         # Bật shuffle=True để quét qua dataset ngẫu nhiên nhanh hơn
+#         # Enable shuffle=True to scan through the dataset randomly faster
 #         test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=True)
 #     except Exception as e:
 #         print(f"Error: {e}")
@@ -390,7 +362,7 @@ def run_visualization():
 #             for idx in range(ppg_np.shape[0]):
 #                 current_rec_name = record_names[idx]
                 
-#                 # --- CHỈ VẼ NẾU LÀ TARGET RECORD VÀ CHƯA ĐƯỢC VẼ ---
+#                 # --- ONLY PLOT IF IT IS A TARGET RECORD AND HAS NOT BEEN PLOTTED YET ---
 #                 if current_rec_name in target_records and current_rec_name not in seen_records:
 #                     visualize_results(
 #                         ppg_np[idx], 
@@ -400,14 +372,12 @@ def run_visualization():
 #                     )
 #                     seen_records.add(current_rec_name)
                     
-#                     # Dừng vòng lặp nếu đã tìm và vẽ đủ tất cả các target records
+#                     # Stop the loop if all target records have been found and plotted
 #                     if len(seen_records) == len(target_records):
-#                         print("\n[*] Đã hiển thị đủ các record mục tiêu. Hoàn tất!")
+#                         print("\n[*] Displayed all target records. Complete!")
 #                         return
 def align_signals(true_s: np.ndarray, pred_s: np.ndarray) -> np.ndarray:
-    """
-    Dùng Cross-Correlation để tìm độ lệch pha và dịch chuyển pred_s cho khớp với true_s.
-    """
+    
     correlation = correlate(true_s, pred_s, mode='full')
     lag = np.argmax(correlation) - (len(pred_s) - 1)
     
@@ -432,10 +402,8 @@ def run_loss():
         print(f"Error: {e}")
         return
 
-    # 1. Khởi tạo danh sách các tập dữ liệu cần theo dõi
     target_datasets = ["dalia", "wesad", "bidmc", "capno", "mimic"]
     
-    # Hàm phụ trợ tạo từ điển lưu trữ metrics rỗng
     def get_empty_metrics():
         return {
             'before': {'rmse': 0.0, 'pearson': 0.0, 'dtw': 0.0, 'cosine': 0.0},
@@ -443,7 +411,6 @@ def run_loss():
             'count': 0
         }
 
-    # 2. Dictionary chứa kết quả cho từng dataset và kết quả tổng thể (overall)
     all_metrics = {ds: get_empty_metrics() for ds in target_datasets}
     all_metrics["overall"] = get_empty_metrics()
 
@@ -453,7 +420,6 @@ def run_loss():
             ppg_input = ppg.to(DEVICE).float().unsqueeze(1)
             ecg_input = ecg.to(DEVICE).float().unsqueeze(1)
 
-            # Mô hình dự đoán
             _, _, predicted_ecg = model(ecg_input, ppg_input)
 
             ecg_true_np = np.atleast_2d(ecg.cpu().squeeze().numpy())
@@ -463,30 +429,24 @@ def run_loss():
                 true_s = ecg_true_np[b]
                 pred_s = ecg_pred_np[b]
                 
-                # Lấy tên bản ghi để phân loại dataset
                 rec_name = str(record_names[b]).lower()
 
-                # Trước Align
                 rmse_b, pearson_b = calculate_metrics(true_s, pred_s)
                 dtw_b = calculate_dtw_distance(true_s, pred_s)
                 cosine_b = calculate_cosine_similarity(true_s, pred_s)
                 
-                # Align
                 aligned_pred_s = align_signals(true_s, pred_s)
 
-                # Sau Align
                 rmse_a, pearson_a = calculate_metrics(true_s, aligned_pred_s)
                 dtw_a = calculate_dtw_distance(true_s, aligned_pred_s)
                 cosine_a = calculate_cosine_similarity(true_s, aligned_pred_s)
 
-                # 3. Tìm xem bản ghi này thuộc dataset nào
                 current_ds = None
                 for ds in target_datasets:
                     if ds in rec_name:
                         current_ds = ds
                         break
                 
-                # 4. Hàm phụ trợ để cộng dồn điểm số vào dictionary
                 def add_to_metrics(metric_dict):
                     metric_dict['before']['rmse'] += rmse_b
                     metric_dict['before']['pearson'] += pearson_b
@@ -500,20 +460,16 @@ def run_loss():
                     
                     metric_dict['count'] += 1
 
-                # Cộng vào kết quả của Dataset tương ứng (nếu tìm thấy)
                 if current_ds is not None:
                     add_to_metrics(all_metrics[current_ds])
                 
-                # Luôn cộng vào kết quả Tổng (Overall)
                 add_to_metrics(all_metrics["overall"])
 
-    # ==========================================
-    # IN BÁO CÁO KẾT QUẢ
-    # ==========================================
+ 
     def print_report(title, m_dict):
         count = m_dict['count']
         if count == 0:
-            return # Bỏ qua nếu dataset này không có mẫu nào trong test set
+            return 
             
         print(f"\n{'='*55}")
         print(f"RESULTS: {title.upper()} ({count} samples)")
@@ -526,11 +482,9 @@ def run_loss():
         print(f"Cosine       | {m_dict['before']['cosine']/count:<15.4f} | {m_dict['after']['cosine']/count:<15.4f}")
         print(f"{'='*55}")
 
-    # 5. In kết quả cho từng Dataset
     for ds in target_datasets:
         print_report(f"DATASET: {ds}", all_metrics[ds])
         
-    # In kết quả chung cuộc (Overall)
     print_report("OVERALL DATASET", all_metrics["overall"])
 
 def run_peak_count_evaluation():
@@ -544,28 +498,26 @@ def run_peak_count_evaluation():
         print(f"Error loading test dataset: {e}")
         return
 
-    # 1. Khởi tạo danh sách và từ điển lưu trữ cho từng dataset
     target_datasets = ["dalia", "wesad", "bidmc", "capno", "mimic"]
     
     def get_empty_tracker():
         return {
-            'true_peaks': 0, 
-            'pred_peaks': 0, 
-            'total_ratio': 0.0, 
+            'sum_abs_err': 0.0, 
+            'sum_err_pct': 0.0, 
             'count': 0
         }
         
     stats = {ds: get_empty_tracker() for ds in target_datasets}
     stats["overall"] = get_empty_tracker()
 
-    print("[*] Đang đếm số lượng đỉnh R bằng thuật toán Pan-Tompkins...")
-    print("[!] ĐANG DÙNG NGƯỠNG CỦA GROUND TRUTH ÉP CHO PREDICTED ECG")
+    print("[*] Evaluating R-Peaks (MAE & Error Percentage)...")
+    print("[!] USING GROUND TRUTH THRESHOLD FOR PREDICTED ECG")
     
     with torch.no_grad():
-        for i, batch_data in enumerate(tqdm(test_loader, desc="Counting R-Peaks")):
+        for i, batch_data in enumerate(tqdm(test_loader, desc="Evaluating R-Peaks Errors")):
             ecg = batch_data[0]
             ppg = batch_data[1]
-            # Lấy record_names (nếu DataLoader có trả về, nếu không đặt tên mặc định)
+            
             record_names = batch_data[2] if len(batch_data) > 2 else [f"unknown_{j}" for j in range(ecg.shape[0])]
             
             ppg_input = ppg.to(DEVICE).float().unsqueeze(1)
@@ -581,56 +533,47 @@ def run_peak_count_evaluation():
                 pred_s = ecg_pred_np[b]
                 rec_name = str(record_names[b]).lower()
 
-                # Tính toán số lượng đỉnh và tỷ lệ cho mẫu hiện tại
-                num_true, num_pred, ratio = calculate_peak_count_ratio(true_s, pred_s, sampling_rate=125)
+                num_true, num_pred, _ = calculate_peak_count_ratio(true_s, pred_s, sampling_rate=125)
                 
-                # Tìm xem bản ghi này thuộc dataset nào
+               
+                abs_err = abs(num_true - num_pred)
+                err_pct = (abs_err / num_true * 100) if num_true > 0 else 0.0
+                
                 current_ds = None
                 for ds in target_datasets:
                     if ds in rec_name:
                         current_ds = ds
                         break
 
-                # Hàm phụ trợ cộng dồn số liệu
                 def update_tracker(tracker):
-                    tracker['true_peaks'] += num_true
-                    tracker['pred_peaks'] += num_pred
-                    tracker['total_ratio'] += ratio
+                    tracker['sum_abs_err'] += abs_err
+                    tracker['sum_err_pct'] += err_pct
                     tracker['count'] += 1
 
-                # Cập nhật cho dataset tương ứng
                 if current_ds is not None:
                     update_tracker(stats[current_ds])
                 
-                # Luôn cập nhật cho Overall
                 update_tracker(stats['overall'])
 
-    # ==========================================
-    # IN BÁO CÁO KẾT QUẢ
-    # ==========================================
+   
     def print_peak_report(title, tracker):
         count = tracker['count']
         if count == 0:
             return
             
-        avg_ratio = tracker['total_ratio'] / count
-        mae_peaks = abs(tracker['true_peaks'] - tracker['pred_peaks']) / count
+        mae_peaks = tracker['sum_abs_err'] / count
+        mape_peaks = tracker['sum_err_pct'] / count
         
         print(f"\n{'='*55}")
-        print(f"BÁO CÁO ĐỈNH R: {title.upper()} ({count} segments)")
+        print(f"R-PEAK ERROR REPORT: {title.upper()} ({count} segments)")
         print(f"{'='*55}")
-        print(f"Tổng số đỉnh R thực tế (GT)   : {tracker['true_peaks']}")
-        print(f"Tổng số đỉnh R mô hình (Pred) : {tracker['pred_peaks']}")
-        print(f"-------------------------------------------------------")
-        print(f"Tỷ lệ số đỉnh trung bình      : {avg_ratio * 100:.2f} %")
-        print(f"Sai lệch trung bình (MAE)     : {mae_peaks:.2f} đỉnh/segment")
+        print(f"Mean R-peaks Error (MAE) : {mae_peaks:.4f} peaks/segment")
+        print(f"R-peaks Error Percentage : {mape_peaks:.2f} %")
         print(f"{'='*55}")
 
-    # In báo cáo cho từng dataset con
     for ds in target_datasets:
         print_peak_report(f"DATASET {ds}", stats[ds])
         
-    # In báo cáo tổng thể
     print_peak_report("OVERALL DATASET", stats["overall"])
 # def run_peak_count_evaluation():
 #     set_seed(SEED)
@@ -648,8 +591,8 @@ def run_peak_count_evaluation():
 #     total_ratio = 0.0
 #     total_samples = 0
 
-#     print("[*] Đang đếm số lượng đỉnh R bằng thuật toán Pan-Tompkins...")
-#     print("[!] ĐANG DÙNG NGƯỠNG CỦA GROUND TRUTH ÉP CHO PREDICTED ECG")
+#     print("[*] Counting R-peaks using Pan-Tompkins algorithm...")
+#     print("[!] USING GROUND TRUTH THRESHOLD FOR PREDICTED ECG")
     
 #     with torch.no_grad():
 #         for i, batch_data in enumerate(tqdm(test_loader, desc="Counting R-Peaks")):
@@ -679,12 +622,12 @@ def run_peak_count_evaluation():
 #     mae_peaks = abs(total_true_peaks - total_pred_peaks) / total_samples if total_samples > 0 else 0
 
 #     print(f"\n{'='*50}")
-#     print(f"BÁO CÁO SỐ LƯỢNG ĐỈNH R ({total_samples} samples)")
+#     print(f"R-PEAK COUNT REPORT ({total_samples} samples)")
 #     print(f"{'='*50}")
-#     print(f"Tổng số đỉnh R thực tế (Ground Truth) : {total_true_peaks}")
-#     print(f"Tổng số đỉnh R mô hình sinh ra (Pred) : {total_pred_peaks}")
-#     print(f"Tỷ lệ số đỉnh trung bình (Pred/True)  : {avg_ratio * 100:.2f} %")
-#     print(f"Sai lệch trung bình trên mỗi tín hiệu : {mae_peaks:.2f} đỉnh/tín hiệu")
+#     print(f"Total Ground Truth R-peaks : {total_true_peaks}")
+#     print(f"Total Predicted R-peaks (Pred) : {total_pred_peaks}")
+#     print(f"Average Peak Ratio (Pred/True) : {avg_ratio * 100:.2f} %")
+#     print(f"Average error per signal : {mae_peaks:.2f} peaks/signal")
 #     print(f"{'='*50}")
 
 if __name__ == "__main__":

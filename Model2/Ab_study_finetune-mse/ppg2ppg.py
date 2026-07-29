@@ -8,32 +8,69 @@ import torch.nn.functional as F
 
 
 # ============================================================
-# Config
+# Cấu hình hệ thống (Config)
 # ============================================================
 @dataclass
-class ECGAEConfig:
+class PPGAEConfig:
     input_length: int = 2400
-    in_channels: int = 1
+    ppg_in_channels: int = 1
 
-    # backbone
     dims: Tuple[int, int, int, int] = (64, 128, 256, 512)
     depths: Tuple[int, int, int, int] = (2, 2, 4, 2)
 
-    # temporal latent
-    latent_channels: int = 16         # latent sequence channels
-    latent_length: int = 75           # keep temporal structure
+    latent_channels: int = 16
+    latent_length: int = 75
 
-    # attention
     attn_heads: int = 8
     attn_dropout: float = 0.0
+    use_derivatives: bool = True
 
-    # decoder global branch
+    # Cấu nhánh global branch trong decoder
     global_latent_dim: int = 128
     trend_poly: int = 2
+# ============================================================
+# PPG front-end
+# ============================================================
+class DerivativeInput(nn.Module):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        d1 = torch.gradient(x, dim=-1)[0]
+        d2 = torch.gradient(d1, dim=-1)[0]
+        return torch.cat([x, d1, d2], dim=1)
 
+
+class InceptionStem1D(nn.Module):
+    def __init__(self, in_channels: int = 3, out_channels: int = 32):
+        super().__init__()
+        branch_c = out_channels // 4
+
+        self.branch1 = nn.Conv1d(in_channels, branch_c, kernel_size=1)
+
+        self.branch2 = nn.Sequential(
+            nn.Conv1d(in_channels, branch_c, kernel_size=1),
+            nn.Conv1d(branch_c, branch_c, kernel_size=3, padding=1),
+        )
+
+        self.branch3 = nn.Sequential(
+            nn.Conv1d(in_channels, branch_c, kernel_size=1),
+            nn.Conv1d(branch_c, branch_c, kernel_size=5, padding=2),
+        )
+
+        self.branch4 = nn.Sequential(
+            nn.MaxPool1d(kernel_size=3, stride=1, padding=1),
+            nn.Conv1d(in_channels, branch_c, kernel_size=1),
+        )
+
+        self.out_norm = LayerNorm1D(out_channels)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = torch.cat([
+            self.branch1(x), self.branch2(x), 
+            self.branch3(x), self.branch4(x)
+        ], dim=1)
+        return self.out_norm(x)
 
 # ============================================================
-# Basic modules
+# Các khối cơ bản (Basic Modules)
 # ============================================================
 class LayerNorm1D(nn.Module):
     def __init__(self, num_channels: int, eps: float = 1e-6):
@@ -45,6 +82,7 @@ class LayerNorm1D(nn.Module):
 
 
 class GRN1D(nn.Module):
+    """Global Response Normalization 1D dùng cho ConvNeXt V2"""
     def __init__(self, dim: int, eps: float = 1e-6):
         super().__init__()
         self.eps = eps
@@ -152,7 +190,6 @@ class SelfAttention1D(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: [B, C, L]
         x_seq = x.transpose(1, 2)  # [B, L, C]
 
         x_norm = self.norm1(x_seq)
@@ -166,7 +203,7 @@ class SelfAttention1D(nn.Module):
 
 
 # ============================================================
-# Decomposable global branch
+# Cấu trúc tách biệt xu hướng toàn cục (Decomposable Global Branch)
 # ============================================================
 class TrendLayer(nn.Module):
     def __init__(self, seq_len: int, feat_dim: int, latent_dim: int, trend_poly: int):
@@ -178,7 +215,6 @@ class TrendLayer(nn.Module):
         self.fc2 = nn.Linear(feat_dim * trend_poly, feat_dim * trend_poly)
 
     def forward(self, z: torch.Tensor) -> torch.Tensor:
-        # z: [B, latent_dim]
         params = F.gelu(self.fc1(z))
         params = self.fc2(params).view(-1, self.feat_dim, self.trend_poly)
 
@@ -204,30 +240,33 @@ class LevelLayer(nn.Module):
 
 
 # ============================================================
-# Encoder
-# Input: [B, 1, 2400]
-# Output feature: [B, 512, 75]
+# Bộ mã hóa PPG Encoder
+# Input: [B, 1, 2400] -> Output feature: [B, 512, 75]
 # ============================================================
-class ECGEncoder1D(nn.Module):
-    def __init__(self, cfg: ECGAEConfig):
+class PPGEncoder1D(nn.Module):
+    def __init__(self, cfg: PPGAEConfig):
         super().__init__()
         dims = cfg.dims
         depths = cfg.depths
 
-        self.stem = nn.Sequential(
-            nn.Conv1d(cfg.in_channels, dims[0], kernel_size=4, stride=4),   # 2400 -> 600
+        self.prep = DerivativeInput() if cfg.use_derivatives else nn.Identity()
+        stem_in = 3 if cfg.use_derivatives else cfg.ppg_in_channels
+
+        self.stem = InceptionStem1D(in_channels=stem_in, out_channels=32)
+
+        self.patchify = nn.Sequential(
+            nn.Conv1d(32, dims[0], kernel_size=4, stride=4),  # 2400 -> 600
             LayerNorm1D(dims[0]),
         )
-        # (64, 128, 256, 512)
-        # (2, 2, 4, 2)
+
         self.stage1 = nn.Sequential(*[ConvNeXtV2Block1D(dims[0]) for _ in range(depths[0])])
-        self.down1 = DownsampleBlock1D(dims[0], dims[1])   # 600 -> 300
+        self.down1 = DownsampleBlock1D(dims[0], dims[1])
 
         self.stage2 = nn.Sequential(*[ConvNeXtV2Block1D(dims[1]) for _ in range(depths[1])])
-        self.down2 = DownsampleBlock1D(dims[1], dims[2])   # 300 -> 150
+        self.down2 = DownsampleBlock1D(dims[1], dims[2])
 
         self.stage3 = nn.Sequential(*[ConvNeXtV2Block1D(dims[2]) for _ in range(depths[2])])
-        self.down3 = DownsampleBlock1D(dims[2], dims[3])   # 150 -> 75
+        self.down3 = DownsampleBlock1D(dims[2], dims[3])
 
         self.stage4 = nn.Sequential(*[ConvNeXtV2Block1D(dims[3]) for _ in range(depths[3])])
         self.bottleneck_attn = SelfAttention1D(
@@ -236,8 +275,10 @@ class ECGEncoder1D(nn.Module):
             dropout=cfg.attn_dropout,
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, ppg: torch.Tensor) -> torch.Tensor:
+        x = self.prep(ppg)
         x = self.stem(x)
+        x = self.patchify(x)
         x = self.stage1(x)
         x = self.down1(x)
         x = self.stage2(x)
@@ -246,7 +287,7 @@ class ECGEncoder1D(nn.Module):
         x = self.down3(x)
         x = self.stage4(x)
         x = self.bottleneck_attn(x)
-        return x   # [B, 512, 75]
+        return x  # [B, 512, 75]
 
 
 class TemporalBottleneck(nn.Module):
@@ -259,18 +300,18 @@ class TemporalBottleneck(nn.Module):
         )
         self.to_latent = nn.Conv1d(in_dim, latent_channels, kernel_size=1)
 
-    def forward(self, feat: torch.Tensor) -> torch.Tensor:
+    def forward(self, feat: torch.Tensor):
         x = self.pre(feat)
         z = self.to_latent(x)
-        return z  # [B, latent_channels, 75]
+        return z
 
 
 # ============================================================
-# Strong decoder
-# z: [B, latent_channels, 75] -> ECG [B, 1, 2400]
+# Bộ giải mã PPG Decoder
+# z: [B, latent_channels, 75] -> PPG [B, 1, 2400]
 # ============================================================
-class ECGDecoder1D(nn.Module):
-    def __init__(self, cfg: ECGAEConfig):
+class PPGDecoder1D(nn.Module):
+    def __init__(self, cfg: PPGAEConfig):
         super().__init__()
         dims = cfg.dims
         depths = cfg.depths
@@ -286,8 +327,6 @@ class ECGDecoder1D(nn.Module):
             num_heads=cfg.attn_heads,
             dropout=cfg.attn_dropout,
         )
-        #  dims: Tuple[int, int, int, int] = (64, 128, 256, 512)
-        # depths: Tuple[int, int, int, int] = (2, 2, 4, 2)
 
         self.stage4 = nn.Sequential(
             *[ConvNeXtV2Block1D(dims[3]) for _ in range(depths[3])],
@@ -325,7 +364,7 @@ class ECGDecoder1D(nn.Module):
             nn.Conv1d(dims[0] // 2, 1, kernel_size=7, padding=3),
         )
 
-        # global refinement branch from pooled latent sequence
+        # Nhánh hiệu chỉnh global từ chuỗi không gian tiềm ẩn (latent sequence) đã được duỗi phẳng
         pooled_dim = cfg.latent_channels * cfg.latent_length
         self.to_global = nn.Sequential(
             nn.Linear(pooled_dim, cfg.global_latent_dim),
@@ -376,34 +415,33 @@ class ECGDecoder1D(nn.Module):
         
 
 # ============================================================
-# ECG Standard Autoencoder (Without VAE)
+# PPG Standard Autoencoder Mô hình hoàn chỉnh (Không dùng VAE)
 # ============================================================
-class ECGAutoencoder(nn.Module):
-    def __init__(self, cfg: ECGAEConfig):
+class PPGAutoencoder(nn.Module):
+    def __init__(self, cfg: PPGAEConfig):
         super().__init__()
         self.cfg = cfg
-        self.encoder = ECGEncoder1D(cfg)
+        self.encoder = PPGEncoder1D(cfg)
         self.latent_head = TemporalBottleneck(cfg.dims[-1], cfg.latent_channels)
-        self.decoder = ECGDecoder1D(cfg)
+        self.decoder = PPGDecoder1D(cfg)
 
-    def forward(self, ecg: torch.Tensor) -> Dict[str, torch.Tensor]:
-        feat = self.encoder(ecg)                       # [B, 512, 75]
+    def forward(self, ppg: torch.Tensor) -> Dict[str, torch.Tensor]:
+        feat = self.encoder(ppg)                       # [B, 512, 75]
         z = self.latent_head(feat)                     # [B, latent_channels, 75]
-        recon = self.decoder(z)
+        recon = self.decoder(z)                        # [B, 1, 2400]
 
         return {
-            "latent_ecg": z,               # [B, latent_channels, 75]
-            "reconstructed_ecg": recon,    # [B, 1, 2400]
+            "latent_ppg": z,               
+            "reconstructed_ppg": recon,    
         }
 
 
 # ============================================================
-# Loss (Simplified, L1 + Pearson only)
+# Hàm tổn thất PPG (L1 Loss + Pearson Correlation Coefficient)
 # ============================================================
-class ECGReconstructionLoss(nn.Module):
+class PPGReconstructionLoss(nn.Module):
     def __init__(self):
         super().__init__()
-        # Initialize L1 Loss only
         self.l1_loss = nn.L1Loss()
 
     @staticmethod
@@ -419,16 +457,17 @@ class ECGReconstructionLoss(nn.Module):
         corr = num / den
         return 1.0 - corr.mean()
 
-    def forward(self, outputs: Dict[str, torch.Tensor], target_ecg: torch.Tensor) -> Dict[str, torch.Tensor]:
-        recon = outputs["reconstructed_ecg"]
+    def forward(self, outputs: Dict[str, torch.Tensor], target_ppg: torch.Tensor) -> Dict[str, torch.Tensor]:
+        # Đồng bộ hóa chính xác key đầu ra tái tạo
+        recon = outputs["reconstructed_ppg"]
         
-        # 1. Calculate L1 Loss
-        loss_l1 = self.l1_loss(recon, target_ecg)
+        # 1. Tính L1 Loss
+        loss_l1 = self.l1_loss(recon, target_ppg)
         
-        # 2. Calculate Pearson Loss
-        loss_pearson = self.pearson_loss(recon, target_ecg)
+        # 2. Tính Pearson Loss (Độ tương quan hình dáng sóng)
+        loss_pearson = self.pearson_loss(recon, target_ppg)
         
-        # 3. Calculate Total Loss
+        # 3. Tổng hợp Loss
         loss_total = loss_l1 + loss_pearson
 
         return {
@@ -436,3 +475,24 @@ class ECGReconstructionLoss(nn.Module):
             "loss_l1": loss_l1,
             "loss_pearson": loss_pearson
         }
+
+
+# ============================================================
+# Kiểm thử cấu trúc mạng đầu cuối (Sanity Check)
+# ============================================================
+if __name__ == "__main__":
+    cfg = PPGAEConfig()
+    model = PPGAutoencoder(cfg)
+    criterion = PPGReconstructionLoss()
+
+    # Khởi tạo tensor giả lập tín hiệu PPG đầu vào: [Batch size=2, Channels=1, Length=2400]
+    dummy_input = torch.randn(2, 1, 2400)
+    
+    # Chạy thử mô hình
+    outputs = model(dummy_input)
+    losses = criterion(outputs, dummy_input)
+    
+    print("--- KIỂM TRA ĐẦU RA MÔ HÌNH PPG AE COMPLETED ---")
+    print("Kích thước Latent Space:", outputs["latent_ppg"].shape)
+    print("Kích thước Tái tạo thu được:", outputs["reconstructed_ppg"].shape)
+    print(f"Tổng lỗi Loss: {losses['loss_total'].item():.4f} (L1: {losses['loss_l1'].item():.4f}, Pearson: {losses['loss_pearson'].item():.4f})")

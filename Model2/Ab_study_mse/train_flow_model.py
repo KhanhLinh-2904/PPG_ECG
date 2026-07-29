@@ -31,11 +31,11 @@ class Stage2TrainConfig:
     val_path: str = "/home/linhhima/Diffusion_datasets/combined_segment_split_val.npz"
 
     # Trọng số của Stage 1 (Phải chạy xong Giai đoạn 1 mới có)
-    ecg_checkpoint_path: str = "/home/linhhima/PPG_ECG/saved_models_ecg_vae/best_ecg_autoencoder.pth" 
-    ppg_checkpoint_path: str = "/home/linhhima/PPG_ECG/saved_models_alignment/best_ppg_alignment.pth"
+    ecg_checkpoint_path: str = "/home/linhhima/PPG_ECG/saved_models_ecg_vae_segment/best_ecg_autoencoder.pth" 
+    ppg_checkpoint_path: str = "/home/linhhima/PPG_ECG/Model2/Ab_study_o_mse/saved_models_alignment_segment/best_ppg_alignment.pth"
     
     # Đường dẫn lưu mô hình Stage 2
-    save_dir: str = "saved_models_flow"
+    save_dir: str = "/home/linhhima/PPG_ECG/Model2/Ab_study_o_mse/saved_models_flow_segment"
     best_model_name: str = "best_rectified_flow.pth"
     plot_name: str = "flow_loss_curve.png"  # <--- THÊM TÊN FILE HÌNH ẢNH BIỂU ĐỒ
 
@@ -127,7 +127,7 @@ def load_frozen_stage1():
     ecg_ae = ECGAutoencoder(ecg_cfg).to(DEVICE)
     if not os.path.exists(CFG.ecg_checkpoint_path):
         raise FileNotFoundError(f"Lỗi: Không tìm thấy trọng số ECG Teacher tại {CFG.ecg_checkpoint_path}")
-    ckpt_ecg = torch.load(CFG.ecg_checkpoint_path, map_location=DEVICE)
+    ckpt_ecg = torch.load(CFG.ecg_checkpoint_path, map_location=DEVICE, weights_only=False)
     ecg_ae.load_state_dict(ckpt_ecg.get("model_state_dict", ckpt_ecg))
     ecg_ae.eval()
     for p in ecg_ae.parameters(): p.requires_grad = False
@@ -136,7 +136,7 @@ def load_frozen_stage1():
     ppg_model = PPG2ECGModel(ecg_ae=ecg_ae, cfg=ppg_cfg).to(DEVICE)
     if not os.path.exists(CFG.ppg_checkpoint_path):
         raise FileNotFoundError(f"Lỗi: Không tìm thấy trọng số PPG Alignment tại {CFG.ppg_checkpoint_path}")
-    ckpt_ppg = torch.load(CFG.ppg_checkpoint_path, map_location=DEVICE)
+    ckpt_ppg = torch.load(CFG.ppg_checkpoint_path, map_location=DEVICE, weights_only=False)
     ppg_model.load_state_dict(ckpt_ppg.get("model_state_dict", ckpt_ppg))
     ppg_model.eval()
     for p in ppg_model.parameters(): p.requires_grad = False
@@ -250,7 +250,7 @@ def main():
 
     # 4. Optimizer & Scheduler
     optimizer = optim.AdamW(flow_model.parameters(), lr=CFG.lr, weight_decay=CFG.weight_decay)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=10, verbose=True)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=10)
     scaler = GradScaler(enabled=CFG.use_amp)
 
     best_val_loss = float("inf")

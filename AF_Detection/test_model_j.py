@@ -2,19 +2,18 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
-from model import FocusedNeuralNetwork # ĐÃ SỬA: Import model mới
+from model import FocusedNeuralNetwork
 from sklearn.metrics import roc_curve, auc, confusion_matrix, precision_recall_curve, average_precision_score
 import matplotlib.pyplot as plt
 
 # ----------- Configuration -----------
-CHECKPOINT_PATH = "/home/linhhima/PPG_ECG/AF_Detection/new_checkpoint_threshold/best_model.pth"
-TEST_DATA_PATH = "/home/linhhima/PPG_ECG/AF_Detection/total_mimic_af_flow_segment_mse_1.npz"
+CHECKPOINT_PATH = "/home/linhhima/PPG_ECG/AF_Detection/new_checkpoints_mimic_af/best_model.pth"
+TEST_DATA_PATH = "/home/linhhima/PPG_ECG/AF_Detection/detect_af_MIT_BIH_test.npz"
 
 BATCH_SIZE = 32
 
-# Nếu bạn đã tìm được Threshold từ tập Train, hãy điền vào đây.
-# Nếu để None, máy sẽ tự động tìm Threshold tốt nhất trên tập dữ liệu hiện tại.
-CUSTOM_THRESHOLD = 0.5
+# ĐÃ KHÓA NGƯỠNG TỐI ƯU TỪ TẬP TRAIN
+LOCKED_THRESHOLD = 0.5
 
 # ----------- Load Test Data -----------
 test_data = np.load(TEST_DATA_PATH)
@@ -49,23 +48,18 @@ all_probs = []
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model.to(device)
 
-print("[*] Đang chạy suy luận (Inference) trên tập dữ liệu...")
+print("[*] Đang chạy suy luận (Inference) trên tập Test...")
 with torch.no_grad():
     for inputs, labels in test_loader:
         inputs, labels = inputs.to(device), labels.to(device) 
         
-        # 1. Forward pass
         outputs = model(inputs)
-        
-        # 2. Tính Loss (Dùng outputs thô)
         loss = criterion(outputs, labels)
         test_loss += loss.item() * inputs.size(0)
         total += labels.size(0)
         
-        # 3. Biến Logits thành Xác suất (Probabilities) bằng Softmax
-        probs = torch.softmax(outputs, dim=1)[:, 1]  # Lấy xác suất của lớp 1 (AF)
+        probs = torch.softmax(outputs, dim=1)[:, 1]
 
-        # 4. Lưu lại dữ liệu để hậu xử lý
         all_labels.extend(labels.cpu().numpy())
         all_probs.extend(probs.cpu().numpy())
 
@@ -73,30 +67,17 @@ avg_loss = test_loss / total
 y_true = np.array(all_labels)
 y_probs = np.array(all_probs)
 
-# ----------- HẬU XỬ LÝ: TÌM THRESHOLD BẰNG YOUDEN'S INDEX -----------
+# ----------- HẬU XỬ LÝ: ÁP DỤNG NGƯỠNG ĐÃ KHÓA -----------
 fpr, tpr, roc_thresholds = roc_curve(y_true, y_probs)
 roc_auc = auc(fpr, tpr)
 
-if CUSTOM_THRESHOLD is None:
-    print("\n[*] Đang tự động dò tìm Optimal Threshold (Youden's Index)...")
-    # Youden's J = TPR - FPR
-    youden_j = tpr - fpr
-    best_idx = np.argmax(youden_j)
-    
-    optimal_threshold = roc_thresholds[best_idx]
-    max_j = youden_j[best_idx]
-    
-    print(f"[*] Max Youden's J      : {max_j:.4f}")
-    print(f"[*] Optimal Threshold   : {optimal_threshold:.4f}")
-else:
-    optimal_threshold = CUSTOM_THRESHOLD
-    # Cần tìm lại best_idx gần nhất với CUSTOM_THRESHOLD để vẽ hình nếu muốn
-    best_idx = np.argmin(np.abs(roc_thresholds - optimal_threshold))
-    print(f"\n[*] Sử dụng Threshold được chỉ định: {optimal_threshold:.4f}")
+print(f"\n[*] Đang sử dụng Threshold đã khóa: {LOCKED_THRESHOLD:.4f}")
+# Tìm index của điểm trên đồ thị ROC gần với Threshold đã khóa nhất để lát nữa vẽ hình
+operating_idx = np.argmin(np.abs(roc_thresholds - LOCKED_THRESHOLD))
 
 # ----------- CHẨN ĐOÁN & TÍNH TOÁN METRICS -----------
-# Quyết định nhãn dựa trên Ngưỡng tối ưu
-y_pred = (y_probs >= optimal_threshold).astype(int)
+# Quyết định nhãn dựa trên Ngưỡng 0.5612
+y_pred = (y_probs >= LOCKED_THRESHOLD).astype(int)
 
 # Xuất Confusion Matrix
 tn, fp, fn, tp = confusion_matrix(y_true, y_pred).ravel()
@@ -108,7 +89,7 @@ specificity = 100 * tn / (tn + fp) if (tn + fp) > 0 else 0.0
 
 # ----------- IN BÁO CÁO KẾT QUẢ -----------
 print("\n" + "="*60)
-print(f" 📊 BÁO CÁO ĐÁNH GIÁ (THRESHOLD = {optimal_threshold:.4f})")
+print(f" 📊 BÁO CÁO ĐÁNH GIÁ TRÊN TẬP TEST (THRESHOLD = {LOCKED_THRESHOLD:.4f})")
 print("="*60)
 print(f"Test Loss            : {avg_loss:.4f}")
 print(f"AUROC                : {roc_auc:.4f}")
@@ -125,35 +106,25 @@ print(f"Specificity          : {specificity:.2f}%")
 print("="*60 + "\n")
 
 # =================================================================
-# VẼ ĐỒ THỊ ROC VÀ TRỰC QUAN HÓA YOUDEN'S INDEX
+# VẼ ĐỒ THỊ ROC VỚI ĐIỂM HOẠT ĐỘNG (OPERATING POINT) ĐÃ KHÓA
 # =================================================================
 plt.figure(figsize=(9, 7))
 plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC Curve (AUROC = {roc_auc:.4f})')
 plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--', label='Chance Line (Random Guess)')
 
-if CUSTOM_THRESHOLD is None:
-    # Lấy tọa độ của điểm tối ưu
-    best_fpr = fpr[best_idx]
-    best_tpr = tpr[best_idx]
-    
-    # 1. Vẽ điểm tối ưu (Chấm đỏ)
-    plt.scatter(best_fpr, best_tpr, marker='o', color='red', s=120, 
-                label=f'Optimal Cut-off ({optimal_threshold:.4f})\n(FPR: {best_fpr:.2f}, TPR: {best_tpr:.2f})', zorder=5)
-    
-    # 2. Vẽ đường kẻ dọc thể hiện khoảng cách Youden's Index (J)
-    # Đường thẳng đứng từ (FPR, FPR) lên (FPR, TPR)
-    plt.plot([best_fpr, best_fpr], [best_fpr, best_tpr], color='green', linestyle=':', lw=2.5, 
-             label=f"Youden's Index (J = {max_j:.4f})")
-    
-    # 3. Thêm chữ J để chú thích cạnh đường nét đứt
-    plt.text(best_fpr + 0.02, (best_fpr + best_tpr) / 2, f'J = {max_j:.4f}', 
-             color='green', fontsize=12, fontweight='bold')
+# Lấy tọa độ của Threshold đã khóa trên đường cong ROC
+op_fpr = fpr[operating_idx]
+op_tpr = tpr[operating_idx]
+
+# Vẽ điểm đánh dấu hiệu suất thực tế của mô hình trên tập Test
+plt.scatter(op_fpr, op_tpr, marker='o', color='red', s=120, 
+            label=f'Locked Threshold ({LOCKED_THRESHOLD:.4f})\nTest FPR: {op_fpr:.2f}, Test TPR: {op_tpr:.2f}', zorder=5)
 
 plt.xlim([0.0, 1.0])
 plt.ylim([0.0, 1.05])
 plt.xlabel('False Positive Rate (1 - Specificity)', fontsize=12)
 plt.ylabel('True Positive Rate (Sensitivity)', fontsize=12)
-plt.title("Receiver Operating Characteristic (ROC) & Youden's Index", fontsize=14, fontweight='bold')
+plt.title("Test Set: ROC Curve & Locked Operating Point", fontsize=14, fontweight='bold')
 plt.legend(loc="lower right", fontsize=10)
 plt.grid(True, alpha=0.3)
 plt.tight_layout()
@@ -170,7 +141,7 @@ plt.plot(recall_curve, precision_curve, color='blue', lw=2,
          label=f'PRC Curve (Average Precision = {avg_precision:.4f})')
 plt.xlabel('Recall (Sensitivity)', fontsize=12)
 plt.ylabel('Precision', fontsize=12)
-plt.title('Precision-Recall (PRC) Curve', fontsize=14, fontweight='bold')
+plt.title('Test Set: Precision-Recall (PRC) Curve', fontsize=14, fontweight='bold')
 plt.grid(True, alpha=0.3)
 plt.legend(loc='lower left', fontsize=10)
 plt.ylim([0.0, 1.05])

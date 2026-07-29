@@ -19,8 +19,7 @@ class FFT_FeatureExtractor(nn.Module):
         fft_out = torch.fft.rfft(time_features_f32, dim=-1)
         mag_out = torch.abs(fft_out)  
         mag_out = mag_out.to(orig_dtype)
-        freq_pooled = mag_out.mean(dim=-1) 
-        
+        freq_pooled = mag_out.mean(dim=-1)  
         return freq_pooled
     
 class CrossAttentionFusion(nn.Module):
@@ -82,7 +81,7 @@ class PositionalEncoding1D(nn.Module):
         return x + self.pe[:, :x.size(1), :]
 
 class ECGDecoder_Transformer(nn.Module):
-    def __init__(self, bottleneck_channels=512, d_model=256, nhead=8, num_layers=4, target_length=2400):
+    def __init__(self, bottleneck_channels=2048, d_model=256, nhead=8, num_layers=4, target_length=2400):
         super().__init__()
         self.target_length = target_length
         self.channel_proj = nn.Conv1d(bottleneck_channels, d_model, kernel_size=1)

@@ -25,11 +25,11 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 BATCH_SIZE = 64
 INPUT_LENGTH = 2400
 TEST_DATA_PATH = '/home/linhhima/PPG_ECG/datasets/z_score_norm/total_mimic_af.npz'
-
+# TEST_DATA_PATH = '/home/linhhima/Diffusion_datasets/combined_test.npz'
 # Đường dẫn trọng số (Hãy đảm bảo đường dẫn chính xác)
 PHASE1_ECG_PATH = '/home/linhhima/PPG_ECG/saved_models_ecg_vae_segment/best_ecg_autoencoder.pth'
-PHASE1_PPG_PATH = '/home/linhhima/PPG_ECG/saved_models_alignment_segment/best_ppg_alignment.pth'
-PHASE2_FLOW_PATH = '/home/linhhima/PPG_ECG/saved_models_flow_segment/best_rectified_flow.pth'
+PHASE1_PPG_PATH = '/home/linhhima/PPG_ECG/Model2/Ab_study/saved_models_alignment_segment/best_ppg_alignment.pth'
+PHASE2_FLOW_PATH = '/home/linhhima/PPG_ECG/Model2/Ab_study/saved_models_flow_segment/best_rectified_flow.pth'
 
 
 ODE_STEPS = 10 # Số bước giải Euler cho Rectified Flow
@@ -349,132 +349,132 @@ def analyze_p_wave_for_af(signal, fs=125, gt_threshold=None):
 # ==========================================
 # CÁC CHỨC NĂNG CHÍNH (VISUALIZE, LOSS, SAVE, EVAL)
 # ==========================================
-def run_visualization(max_plots=100):
-    """
-    Vẽ biểu đồ so sánh tín hiệu ECG tái tạo và Ground Truth CHỈ dành cho các segments
-    thuộc về record 'mimic_perform_af_012', đồng thời tính toán và hiển thị tỷ lệ P/R ratio.
+# def run_visualization(max_plots=100):
+#     """
+#     Vẽ biểu đồ so sánh tín hiệu ECG tái tạo và Ground Truth CHỈ dành cho các segments
+#     thuộc về record 'mimic_perform_af_012', đồng thời tính toán và hiển thị tỷ lệ P/R ratio.
     
-    Args:
-        max_plots (int, optional): Số lượng segment tối đa muốn vẽ để tránh treo máy.
-                                   Truyền None nếu muốn vẽ tất cả không giới hạn.
-    """
-    set_seed(42)
-    ecg_ae, ppg_model, flow_model = load_models()
+#     Args:
+#         max_plots (int, optional): Số lượng segment tối đa muốn vẽ để tránh treo máy.
+#                                    Truyền None nếu muốn vẽ tất cả không giới hạn.
+#     """
+#     set_seed(42)
+#     ecg_ae, ppg_model, flow_model = load_models()
 
-    try:
-        dataset = LoadData(TEST_DATA_PATH)
-        # Giữ shuffle=False nếu bạn muốn xem tuần tự từ đầu đến cuối tập test
-        dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False)
-    except Exception as e:
-        print(f"Error loading data: {e}")
-        return
+#     try:
+#         dataset = LoadData(TEST_DATA_PATH)
+#         # Giữ shuffle=False nếu bạn muốn xem tuần tự từ đầu đến cuối tập test
+#         dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False)
+#     except Exception as e:
+#         print(f"Error loading data: {e}")
+#         return
 
-    # Định nghĩa bản ghi mục tiêu cần lọc
-    target_record = "mimic_perform_non_af_001"
-    print(f"[*] Visualizing ONLY segments belonging to: {target_record}. Max plots configured: {max_plots}")
-    plot_count = 0
+#     # Định nghĩa bản ghi mục tiêu cần lọc
+#     target_record = "mimic_perform_non_af_001"
+#     print(f"[*] Visualizing ONLY segments belonging to: {target_record}. Max plots configured: {max_plots}")
+#     plot_count = 0
     
-    with torch.no_grad():
-        for batch_data in dataloader:
-            # Xử lý kích thước tensor và chuyển lên thiết bị (GPU/CPU)
-            ecg = batch_data[0].float().unsqueeze(1).to(DEVICE) if batch_data[0].dim() == 2 else batch_data[0].float().to(DEVICE)
-            ppg = batch_data[1].float().unsqueeze(1).to(DEVICE) if batch_data[1].dim() == 2 else batch_data[1].float().to(DEVICE)
-            record_names = batch_data[2] if len(batch_data) > 2 else [f"Unknown_{i}" for i in range(ecg.shape[0])]
+#     with torch.no_grad():
+#         for batch_data in dataloader:
+#             # Xử lý kích thước tensor và chuyển lên thiết bị (GPU/CPU)
+#             ecg = batch_data[0].float().unsqueeze(1).to(DEVICE) if batch_data[0].dim() == 2 else batch_data[0].float().to(DEVICE)
+#             ppg = batch_data[1].float().unsqueeze(1).to(DEVICE) if batch_data[1].dim() == 2 else batch_data[1].float().to(DEVICE)
+#             record_names = batch_data[2] if len(batch_data) > 2 else [f"Unknown_{i}" for i in range(ecg.shape[0])]
 
-            # Trích xuất đặc trưng và dự đoán qua flow model
-            feat_ppg = ppg_model.ppg_encoder(ppg)
-            z_ppg = ppg_model.ppg_latent_head(feat_ppg)
-            z_ecg_hat = euler_solve(flow_model, z_ppg, num_steps=ODE_STEPS)
-            predicted_ecg = ecg_ae.decoder(z_ecg_hat)
+#             # Trích xuất đặc trưng và dự đoán qua flow model
+#             feat_ppg = ppg_model.ppg_encoder(ppg)
+#             z_ppg = ppg_model.ppg_latent_head(feat_ppg)
+#             z_ecg_hat = euler_solve(flow_model, z_ppg, num_steps=ODE_STEPS)
+#             predicted_ecg = ecg_ae.decoder(z_ecg_hat)
 
-            ecg_true_np = np.atleast_2d(ecg.cpu().squeeze().numpy())
-            ecg_pred_np = np.atleast_2d(predicted_ecg.cpu().squeeze().numpy())
-            ppg_np = np.atleast_2d(ppg.cpu().squeeze().numpy())
+#             ecg_true_np = np.atleast_2d(ecg.cpu().squeeze().numpy())
+#             ecg_pred_np = np.atleast_2d(predicted_ecg.cpu().squeeze().numpy())
+#             ppg_np = np.atleast_2d(ppg.cpu().squeeze().numpy())
 
-            # Duyệt qua từng segment đơn lẻ trong batch
-            for i in range(ecg_true_np.shape[0]):
-                rec_name = record_names[i]
+#             # Duyệt qua từng segment đơn lẻ trong batch
+#             for i in range(ecg_true_np.shape[0]):
+#                 rec_name = record_names[i]
                 
-                # Chỉ lọc và hiển thị nếu tên record chứa chuỗi mục tiêu
-                if target_record not in str(rec_name):
-                    continue  
+#                 # Chỉ lọc và hiển thị nếu tên record chứa chuỗi mục tiêu
+#                 if target_record not in str(rec_name):
+#                     continue  
                 
-                ppg_plot = ppg_np[i]
-                ecg_gt_plot = ecg_true_np[i]
-                ecg_pred_plot = ecg_pred_np[i]
+#                 ppg_plot = ppg_np[i]
+#                 ecg_gt_plot = ecg_true_np[i]
+#                 ecg_pred_plot = ecg_pred_np[i]
                 
-                # =====================================================================
-                # THÊM MỚI: TÍNH TOÁN P/R RATIO TRÊN TÍN HIỆU TÁI TẠO (PREDICTED ECG)
-                # =====================================================================
-                try:
-                    # Bước 1: Lấy ngưỡng chuẩn từ Ground Truth ECG (fs=125)
-                    _, gt_threshold = pan_tompkins_qrs(ecg_gt_plot, fs=125, return_threshold=True)
+#                 # =====================================================================
+#                 # THÊM MỚI: TÍNH TOÁN P/R RATIO TRÊN TÍN HIỆU TÁI TẠO (PREDICTED ECG)
+#                 # =====================================================================
+#                 try:
+#                     # Bước 1: Lấy ngưỡng chuẩn từ Ground Truth ECG (fs=125)
+#                     _, gt_threshold = pan_tompkins_qrs(ecg_gt_plot, fs=125, return_threshold=True)
                     
-                    # Bước 2: Phân tích sóng P trên Reconstructed ECG sử dụng gt_threshold
-                    p_ratio, energy_ratio, p_peaks_idx, r_idx = analyze_p_wave_for_af(
-                        ecg_pred_plot, fs=125, gt_threshold=gt_threshold
-                    )
-                    p_ratio_str = f"{p_ratio:.2f}"
-                except Exception as eval_err:
-                    # Dự phòng nếu độ dài segment quá ngắn không đủ chu kỳ tìm đỉnh
-                    p_ratio_str = "N/A"
-                    p_peaks_idx, r_idx = [], []
+#                     # Bước 2: Phân tích sóng P trên Reconstructed ECG sử dụng gt_threshold
+#                     p_ratio, energy_ratio, p_peaks_idx, r_idx = analyze_p_wave_for_af(
+#                         ecg_pred_plot, fs=125, gt_threshold=gt_threshold
+#                     )
+#                     p_ratio_str = f"{p_ratio:.2f}"
+#                 except Exception as eval_err:
+#                     # Dự phòng nếu độ dài segment quá ngắn không đủ chu kỳ tìm đỉnh
+#                     p_ratio_str = "N/A"
+#                     p_peaks_idx, r_idx = [], []
                 
-                t = np.arange(len(ecg_gt_plot))
-                time_ax = t / 125  # Đổi sang trục thời gian giây nếu muốn đồng bộ
+#                 t = np.arange(len(ecg_gt_plot))
+#                 time_ax = t / 125  # Đổi sang trục thời gian giây nếu muốn đồng bộ
                 
-                # Khởi tạo Figure chứa 4 đồ thị subplot
-                plt.figure(figsize=(12, 11))
-                plt.suptitle(f"Record: {rec_name} | Reconstructed ECG with P/R Ratio: {p_ratio_str}", fontsize=14, fontweight='bold')
+#                 # Khởi tạo Figure chứa 4 đồ thị subplot
+#                 plt.figure(figsize=(12, 11))
+#                 plt.suptitle(f"Record: {rec_name} | Reconstructed ECG with P/R Ratio: {p_ratio_str}", fontsize=14, fontweight='bold')
 
-                # 1. Biểu đồ tín hiệu PPG đầu vào
-                plt.subplot(4, 1, 1)
-                plt.plot(t, ppg_plot, color='green', label='Input PPG')
-                plt.title("Input PPG Signal")
-                plt.grid(True, alpha=0.3)
-                plt.legend(loc='upper right')
+#                 # 1. Biểu đồ tín hiệu PPG đầu vào
+#                 plt.subplot(4, 1, 1)
+#                 plt.plot(t, ppg_plot, color='green', label='Input PPG')
+#                 plt.title("Input PPG Signal")
+#                 plt.grid(True, alpha=0.3)
+#                 plt.legend(loc='upper right')
 
-                # 2. Biểu đồ ECG thực tế (Ground Truth)
-                plt.subplot(4, 1, 2)
-                plt.plot(t, ecg_gt_plot, color='blue', label='Ground Truth ECG')
-                plt.title("Ground Truth ECG")
-                plt.grid(True, alpha=0.3)
-                plt.legend(loc='upper right')
+#                 # 2. Biểu đồ ECG thực tế (Ground Truth)
+#                 plt.subplot(4, 1, 2)
+#                 plt.plot(t, ecg_gt_plot, color='blue', label='Ground Truth ECG')
+#                 plt.title("Ground Truth ECG")
+#                 plt.grid(True, alpha=0.3)
+#                 plt.legend(loc='upper right')
 
-                # 3. Biểu đồ ECG dự đoán (Reconstructed) + Đánh dấu Đỉnh P & R tìm được
-                plt.subplot(4, 1, 3)
-                plt.plot(t, ecg_pred_plot, color='red', label='Predicted ECG')
+#                 # 3. Biểu đồ ECG dự đoán (Reconstructed) + Đánh dấu Đỉnh P & R tìm được
+#                 plt.subplot(4, 1, 3)
+#                 plt.plot(t, ecg_pred_plot, color='red', label='Predicted ECG')
                 
-                # Đánh dấu R-peaks và P-peaks trên đồ thị Reconstructed nếu thuật toán tìm thấy
-                if len(r_idx) > 0:
-                    plt.scatter(r_idx, ecg_pred_plot[r_idx], color='darkred', marker='v', s=60, zorder=3, label='Detected R-Peak')
-                if len(p_peaks_idx) > 0:
-                    plt.scatter(p_peaks_idx, ecg_pred_plot[p_peaks_idx], color='limegreen', marker='o', s=50, zorder=4, label='Detected P-Peak')
+#                 # Đánh dấu R-peaks và P-peaks trên đồ thị Reconstructed nếu thuật toán tìm thấy
+#                 if len(r_idx) > 0:
+#                     plt.scatter(r_idx, ecg_pred_plot[r_idx], color='darkred', marker='v', s=60, zorder=3, label='Detected R-Peak')
+#                 if len(p_peaks_idx) > 0:
+#                     plt.scatter(p_peaks_idx, ecg_pred_plot[p_peaks_idx], color='limegreen', marker='o', s=50, zorder=4, label='Detected P-Peak')
                 
-                plt.title("Predicted ECG (Reconstructed)")
-                plt.grid(True, alpha=0.3)
-                plt.legend(loc='upper right')
+#                 plt.title("Predicted ECG (Reconstructed)")
+#                 plt.grid(True, alpha=0.3)
+#                 plt.legend(loc='upper right')
 
-                # 4. Biểu đồ So sánh (Chập 2 tín hiệu chồng lên nhau)
-                plt.subplot(4, 1, 4)
-                plt.plot(t, ecg_gt_plot, color='black', label='Ground Truth', alpha=0.5)
-                plt.plot(t, ecg_pred_plot, color='red', label='Predicted ECG (from Flow)', linestyle='--', alpha=0.8)
-                plt.title("Comparison: Ground Truth vs Predicted ECG")
-                plt.grid(True, alpha=0.3)
-                plt.legend(loc='upper right')
+#                 # 4. Biểu đồ So sánh (Chập 2 tín hiệu chồng lên nhau)
+#                 plt.subplot(4, 1, 4)
+#                 plt.plot(t, ecg_gt_plot, color='black', label='Ground Truth', alpha=0.5)
+#                 plt.plot(t, ecg_pred_plot, color='red', label='Predicted ECG (from Flow)', linestyle='--', alpha=0.8)
+#                 plt.title("Comparison: Ground Truth vs Predicted ECG")
+#                 plt.grid(True, alpha=0.3)
+#                 plt.legend(loc='upper right')
                 
-                plt.tight_layout()
-                plt.subplots_adjust(top=0.92) # Tránh việc suptitle đè lên tiêu đề subplot 1
-                plt.show()
+#                 plt.tight_layout()
+#                 plt.subplots_adjust(top=0.92) # Tránh việc suptitle đè lên tiêu đề subplot 1
+#                 plt.show()
                 
-                plot_count += 1
+#                 plot_count += 1
                 
-                # Kiểm tra điều kiện dừng nếu đã đạt giới hạn max_plots đặt ra
-                if max_plots is not None and plot_count >= max_plots:
-                    print(f"\n[*] Đã hiển thị đủ giới hạn {max_plots} segments của {target_record}. Dừng xử lý!")
-                    return
+#                 # Kiểm tra điều kiện dừng nếu đã đạt giới hạn max_plots đặt ra
+#                 if max_plots is not None and plot_count >= max_plots:
+#                     print(f"\n[*] Đã hiển thị đủ giới hạn {max_plots} segments của {target_record}. Dừng xử lý!")
+#                     return
 
-    print(f"\n[*] Đã xử lý xong. Tìm thấy và hiển thị tổng cộng {plot_count} segments thuộc {target_record}.")
+#     print(f"\n[*] Đã xử lý xong. Tìm thấy và hiển thị tổng cộng {plot_count} segments thuộc {target_record}.")
 # def run_visualization(max_plots=100):
 #     """
 #     Vẽ biểu đồ so sánh tín hiệu ECG tái tạo và Ground Truth cho tất cả các segments 
@@ -570,93 +570,93 @@ def run_visualization(max_plots=100):
 #                     return
 
 #     print(f"\n[*] Đã xử lý và hiển thị toàn bộ {plot_count} segments có trong tập dữ liệu.")
-# def run_visualization():
-#     set_seed(42)
-#     ecg_ae, ppg_model, flow_model = load_models()
+def run_visualization():
+    set_seed(42)
+    ecg_ae, ppg_model, flow_model = load_models()
 
-#     # --- DANH SÁCH CÁC BẢN GHI MỤC TIÊU ---
-#     target_records = {"dalia_S11", "capno_0028_8min", "wesad_S14", "mimic_64", "bidmc_bidmc08"}
-#     seen_records = set()
+    # --- DANH SÁCH CÁC BẢN GHI MỤC TIÊU ---
+    target_records = {"dalia_S11", "capno_0028_8min", "wesad_S14", "mimic_64", "bidmc_bidmc08"}
+    seen_records = set()
 
-#     try:
-#         dataset = LoadData(TEST_DATA_PATH)
-#         # Bật shuffle=True để quét tìm ngẫu nhiên nhanh hơn
-#         dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
-#     except Exception as e:
-#         print(f"Error loading data: {e}")
-#         return
+    try:
+        dataset = LoadData(TEST_DATA_PATH)
+        # Bật shuffle=True để quét tìm ngẫu nhiên nhanh hơn
+        dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
+    except Exception as e:
+        print(f"Error loading data: {e}")
+        return
 
-#     print("[*] Displaying Reconstructed ECG vs Ground Truth for specific targets...")
+    print("[*] Displaying Reconstructed ECG vs Ground Truth for specific targets...")
     
-#     with torch.no_grad():
-#         for batch_data in dataloader:
-#             # Xử lý kích thước tensor và chuyển lên thiết bị (GPU/CPU)
-#             ecg = batch_data[0].float().unsqueeze(1).to(DEVICE) if batch_data[0].dim() == 2 else batch_data[0].float().to(DEVICE)
-#             ppg = batch_data[1].float().unsqueeze(1).to(DEVICE) if batch_data[1].dim() == 2 else batch_data[1].float().to(DEVICE)
-#             record_names = batch_data[2] if len(batch_data) > 2 else [f"Record_{i}" for i in range(ecg.shape[0])]
+    with torch.no_grad():
+        for batch_data in dataloader:
+            # Xử lý kích thước tensor và chuyển lên thiết bị (GPU/CPU)
+            ecg = batch_data[0].float().unsqueeze(1).to(DEVICE) if batch_data[0].dim() == 2 else batch_data[0].float().to(DEVICE)
+            ppg = batch_data[1].float().unsqueeze(1).to(DEVICE) if batch_data[1].dim() == 2 else batch_data[1].float().to(DEVICE)
+            record_names = batch_data[2] if len(batch_data) > 2 else [f"Record_{i}" for i in range(ecg.shape[0])]
 
-#             # Trích xuất đặc trưng và dự đoán qua flow model
-#             feat_ppg = ppg_model.ppg_encoder(ppg)
-#             z_ppg = ppg_model.ppg_latent_head(feat_ppg)
-#             z_ecg_hat = euler_solve(flow_model, z_ppg, num_steps=ODE_STEPS)
-#             predicted_ecg = ecg_ae.decoder(z_ecg_hat)
+            # Trích xuất đặc trưng và dự đoán qua flow model
+            feat_ppg = ppg_model.ppg_encoder(ppg)
+            z_ppg = ppg_model.ppg_latent_head(feat_ppg)
+            z_ecg_hat = euler_solve(flow_model, z_ppg, num_steps=ODE_STEPS)
+            predicted_ecg = ecg_ae.decoder(z_ecg_hat)
 
-#             # Vẽ biểu đồ cho từng bản ghi trong batch
-#             for i in range(ppg.shape[0]):
-#                 rec_name = record_names[i]
+            # Vẽ biểu đồ cho từng bản ghi trong batch
+            for i in range(ppg.shape[0]):
+                rec_name = record_names[i]
                 
-#                 # --- CHỈ VẼ NẾU LÀ TARGET RECORD VÀ CHƯA ĐƯỢC VẼ ---
-#                 if rec_name in target_records and rec_name not in seen_records:
-#                     ppg_plot = ppg[i].squeeze().cpu().numpy()
-#                     ecg_gt_plot = ecg[i].squeeze().cpu().numpy()
-#                     ecg_pred_plot = predicted_ecg[i].squeeze().cpu().numpy()
+                # --- CHỈ VẼ NẾU LÀ TARGET RECORD VÀ CHƯA ĐƯỢC VẼ ---
+                if rec_name in target_records and rec_name not in seen_records:
+                    ppg_plot = ppg[i].squeeze().cpu().numpy()
+                    ecg_gt_plot = ecg[i].squeeze().cpu().numpy()
+                    ecg_pred_plot = predicted_ecg[i].squeeze().cpu().numpy()
                     
-#                     t = np.arange(len(ecg_gt_plot))
+                    t = np.arange(len(ecg_gt_plot))
                     
-#                     # Tăng chiều cao figure lên 10 để chứa 4 subplots thoải mái hơn
-#                     plt.figure(figsize=(12, 10))
-#                     plt.suptitle(f"Record: {rec_name}", fontsize=14, fontweight='bold')
+                    # Tăng chiều cao figure lên 10 để chứa 4 subplots thoải mái hơn
+                    plt.figure(figsize=(12, 10))
+                    plt.suptitle(f"Record: {rec_name}", fontsize=14, fontweight='bold')
 
-#                     # 1. Biểu đồ tín hiệu PPG
-#                     plt.subplot(4, 1, 1)
-#                     plt.plot(t, ppg_plot, color='green', label='Input PPG')
-#                     plt.title("Input PPG Signal")
-#                     plt.grid(True, alpha=0.3)
-#                     plt.legend(loc='upper right')
+                    # 1. Biểu đồ tín hiệu PPG
+                    plt.subplot(4, 1, 1)
+                    plt.plot(t, ppg_plot, color='green', label='Input PPG')
+                    plt.title("Input PPG Signal")
+                    plt.grid(True, alpha=0.3)
+                    plt.legend(loc='upper right')
 
-#                     # 2. Biểu đồ ECG thực tế (Ground Truth)
-#                     plt.subplot(4, 1, 2)
-#                     plt.plot(t, ecg_gt_plot, color='blue', label='Ground Truth ECG')
-#                     plt.title("Ground Truth ECG")
-#                     plt.grid(True, alpha=0.3)
-#                     plt.legend(loc='upper right')
+                    # 2. Biểu đồ ECG thực tế (Ground Truth)
+                    plt.subplot(4, 1, 2)
+                    plt.plot(t, ecg_gt_plot, color='blue', label='Ground Truth ECG')
+                    plt.title("Ground Truth ECG")
+                    plt.grid(True, alpha=0.3)
+                    plt.legend(loc='upper right')
 
-#                     # 3. Biểu đồ ECG dự đoán (Reconstructed)
-#                     plt.subplot(4, 1, 3)
-#                     plt.plot(t, ecg_pred_plot, color='red', label='Predicted ECG')
-#                     plt.title("Predicted ECG (Reconstructed)")
-#                     plt.grid(True, alpha=0.3)
-#                     plt.legend(loc='upper right')
+                    # 3. Biểu đồ ECG dự đoán (Reconstructed)
+                    plt.subplot(4, 1, 3)
+                    plt.plot(t, ecg_pred_plot, color='red', label='Predicted ECG')
+                    plt.title("Predicted ECG (Reconstructed)")
+                    plt.grid(True, alpha=0.3)
+                    plt.legend(loc='upper right')
 
-#                     # 4. Biểu đồ So sánh (Chồng lấp)
-#                     plt.subplot(4, 1, 4)
-#                     plt.plot(t, ecg_gt_plot, color='black', label='Ground Truth', alpha=0.5)
-#                     plt.plot(t, ecg_pred_plot, color='red', label='Predicted ECG (from Flow)', linestyle='--', alpha=0.8)
-#                     plt.title("Comparison: Ground Truth vs Predicted ECG")
-#                     plt.grid(True, alpha=0.3)
-#                     plt.legend(loc='upper right')
+                    # 4. Biểu đồ So sánh (Chồng lấp)
+                    plt.subplot(4, 1, 4)
+                    plt.plot(t, ecg_gt_plot, color='black', label='Ground Truth', alpha=0.5)
+                    plt.plot(t, ecg_pred_plot, color='red', label='Predicted ECG (from Flow)', linestyle='--', alpha=0.8)
+                    plt.title("Comparison: Ground Truth vs Predicted ECG")
+                    plt.grid(True, alpha=0.3)
+                    plt.legend(loc='upper right')
                     
-#                     plt.tight_layout()
-#                     plt.subplots_adjust(top=0.92) # Để lại khoảng trống cho suptitle không bị đè
-#                     plt.show()
+                    plt.tight_layout()
+                    plt.subplots_adjust(top=0.92) # Để lại khoảng trống cho suptitle không bị đè
+                    plt.show()
                     
-#                     # Thêm vào danh sách đã vẽ
-#                     seen_records.add(rec_name)
+                    # Thêm vào danh sách đã vẽ
+                    seen_records.add(rec_name)
                     
-#                     # Dừng vòng lặp và kết thúc hàm nếu đã tìm thấy đủ tất cả các target records
-#                     if len(seen_records) == len(target_records):
-#                         print("\n[*] Đã hiển thị đủ các record mục tiêu. Hoàn tất!")
-#                         return
+                    # Dừng vòng lặp và kết thúc hàm nếu đã tìm thấy đủ tất cả các target records
+                    if len(seen_records) == len(target_records):
+                        print("\n[*] Đã hiển thị đủ các record mục tiêu. Hoàn tất!")
+                        return
 
 # def visualize_results(ppg, ecg_true, ecg_pred, record_name, fs=125):
 #     print(f"\nVisualizing Record: {record_name}")
@@ -1136,7 +1136,7 @@ def run_peak_count_evaluation():
 if __name__ == "__main__":
     # CHỌN 1 TRONG 3 HÀM ĐỂ CHẠY (Bỏ comment để sử dụng):
     
-    run_visualization()
-    # run_loss()
+    # run_visualization()
+    run_loss()
     # save_ecg_reconstruction("/home/linhhima/PPG_ECG/AF_Detection/total_mimic_af_flow_segment.npz")
     # run_peak_count_evaluation()

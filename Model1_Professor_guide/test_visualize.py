@@ -25,8 +25,8 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 BATCH_SIZE = 64
 INPUT_LENGTH = 2400
 OUTPUT_EMBED_DIM = 128
-TEST_DATA_PATH = '/home/linhhima/Diffusion datasets/test.npz'
-CLIP_MODEL_PATH = "/home/linhhima/PPG_ECG/best_phase2_fusion.pth" 
+TEST_DATA_PATH = '/home/linhhima/Diffusion_datasets/combined_test.npz'
+CLIP_MODEL_PATH = "/home/linhhima/PPG_ECG/best_multitask_model_subject.pth" 
 NUM_SAMPLES_TO_VISUALIZE = 1900 
 
 def set_seed(seed):

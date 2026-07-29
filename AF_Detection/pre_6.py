@@ -131,7 +131,7 @@ def analyze_p_wave_for_af(signal, fs=125, gt_threshold=None):
 # =====================================================================
 # 3. DIAGNOSIS & TESTING
 # =====================================================================
-def run_pure_p_wave_classification(dataset_path, dataset_origin_path, num_plots_to_show=5, filter_view="all"):
+def run_pure_p_wave_classification(dataset_path, dataset_origin_path, num_plots_to_show=100, filter_view="all"):
     """
     filter_view: 
         - "all"    : View all records
@@ -154,7 +154,7 @@ def run_pure_p_wave_classification(dataset_path, dataset_origin_path, num_plots_
     correct_af, correct_non_af = 0, 0
     total_af, total_non_af = 0, 0
     
-    P_RATIO_THRESH = 0.7
+    P_RATIO_THRESH = 0.44
 
     print("\n[*] Analyzing P-Waves with Ground Truth Threshold...")
     
@@ -165,6 +165,7 @@ def run_pure_p_wave_classification(dataset_path, dataset_origin_path, num_plots_
         true_sig = ecgs_orig[i]
         true_lbl = labels[i]
         name_rec = record_name[i]
+        # name_rec = '0'
         
         # NEW STEP: Extract the standard Threshold from Ground Truth
         _, gt_threshold = pan_tompkins_qrs(true_sig, fs=125, return_threshold=True)
@@ -238,40 +239,51 @@ def run_pure_p_wave_classification(dataset_path, dataset_origin_path, num_plots_
             plots_shown += 1
 
     # =====================================================================
-    # PRINT SUMMARY TABLE
+    # PRINT SUMMARY TABLE (UPDATED WITH ALL METRICS)
     # =====================================================================
-    print("\n" + "="*60)
-    print(" 📊 ATRIAL FIBRILLATION DIAGNOSIS SUMMARY (P-WAVE ONLY)")
-    print("="*60)
-    
-    acc_af = (correct_af / total_af * 100) if total_af > 0 else 0
-    acc_non_af = (correct_non_af / total_non_af * 100) if total_non_af > 0 else 0
+    # 1. Xác định các chỉ số của Confusion Matrix
+    tp = correct_af
+    tn = correct_non_af
+    fp = total_non_af - correct_non_af
+    fn = total_af - correct_af
     total_records = total_af + total_non_af
-    overall_acc = ((correct_af + correct_non_af) / total_records * 100) if total_records > 0 else 0
 
-    print(f"🔹 Total test records        : {total_records} records")
-    print("-" * 60)
-    print(f"🔴 ATRIAL FIBRILLATION (AF):")
-    print(f"   - Actual cases            : {total_af}")
-    print(f"   - Correctly predicted     : {correct_af}")
-    print(f"   => Accuracy (Sensitivity) : {acc_af:.2f}%")
-    print("-" * 60)
-    print(f"🟢 NORMAL (Non-AF):")
-    print(f"   - Actual cases            : {total_non_af}")
-    print(f"   - Correctly predicted     : {correct_non_af}")
-    print(f"   => Accuracy (Specificity) : {acc_non_af:.2f}%")
-    print("="*60)
-    print(f"🏆 OVERALL ACCURACY          : {overall_acc:.2f}%")
-    print("="*60 + "\n")
+    # 2. Tính toán các Metrics chính
+    accuracy = ((tp + tn) / total_records * 100) if total_records > 0 else 0
+    recall = (tp / total_af * 100) if total_af > 0 else 0  # Sensitivity
+    specificity = (tn / total_non_af * 100) if total_non_af > 0 else 0
+    precision = (tp / (tp + fp) * 100) if (tp + fp) > 0 else 0
+
+    print("\n" + "="*65)
+    print(" 📊 ATRIAL FIBRILLATION DIAGNOSIS SUMMARY (P-WAVE ONLY)")
+    print("="*65)
+    print(f"🔹 Total test records      : {total_records} records")
+    print("-" * 65)
+    print(f"🔴 ATRIAL FIBRILLATION (AF) - POSITIVE CLASS:")
+    print(f"   - Actual cases (TP+FN)  : {total_af}")
+    print(f"   - True Positives (TP)   : {tp}")
+    print(f"   - False Negatives (FN)  : {fn} (Missed AF)")
+    print("-" * 65)
+    print(f"🟢 NORMAL (Non-AF) - NEGATIVE CLASS:")
+    print(f"   - Actual cases (TN+FP)  : {total_non_af}")
+    print(f"   - True Negatives (TN)   : {tn}")
+    print(f"   - False Positives (FP)  : {fp} (False Alarms)")
+    print("="*65)
+    print(" 🏆 FINAL EVALUATION METRICS:")
+    print(f"   ➤ Accuracy              : {accuracy:.2f}%")
+    print(f"   ➤ Precision             : {precision:.2f}%")
+    print(f"   ➤ Recall (Sensitivity)  : {recall:.2f}%")
+    print(f"   ➤ Specificity           : {specificity:.2f}%")
+    print("="*65 + "\n")
 
 if __name__ == "__main__":
     set_seed(42)
-    dataset_path = "/home/linhhima/PPG_ECG/datasets/z_score_norm/total_mimic_af.npz"
+    dataset_path = "/home/linhhima/PPG_ECG/AF_Detection/total_mimic_af_flow_segment.npz"
     dataset_origin = "/home/linhhima/PPG_ECG/datasets/z_score_norm/total_mimic_af.npz"
     
     run_pure_p_wave_classification(
         dataset_path=dataset_path, 
         dataset_origin_path=dataset_origin, 
         num_plots_to_show=100, 
-        filter_view="non_af"
+        filter_view="af"
     )

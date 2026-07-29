@@ -112,20 +112,18 @@ def train_epoch(
                       WEIGHT_MSE * m_loss + 
                       WEIGHT_PEARSON * p_loss)
         
-        # 3. FIX: Chốt chặn an toàn chống nổ Gradient và hỏng Model
         if torch.isnan(total_loss) or torch.isinf(total_loss):
             print("total_loss: ", total_loss)
             print('c_loss: ', c_loss)
             print('m_loss: ', m_loss)
             print('p_loss: ', p_loss)
 
-            print(f"\n[CẢNH BÁO] Phát hiện NaN/Inf ở epoch {current_epoch}. Đã tự động bỏ qua batch này để bảo vệ mô hình!")
+            print(f"\n[Warning] Detect NaN/Inf in epoch {current_epoch}. Skip batch!")
             optimizer.zero_grad()
             continue
 
         m_loss_val, p_loss_val = m_loss.item(), p_loss.item()
 
-        # 4. Cập nhật Gradient
         scaler.scale(total_loss).backward()
         scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -156,7 +154,6 @@ def evaluate(model, dataloader, contrast_loss_fn, mse_loss_fn, pearson_loss_fn, 
             ecg_target = ecg.to(device).float().unsqueeze(1)
             ppg_input = ppg.to(device).float().unsqueeze(1)
             
-            # Quá trình Eval không dùng autocast nên mặc định là float32, khá an toàn
             embed_ecg, embed_ppg, ecg_pred = model(ecg_target, ppg_input)
             
             c_loss = contrast_loss_fn(embed_ecg, embed_ppg)
@@ -167,7 +164,6 @@ def evaluate(model, dataloader, contrast_loss_fn, mse_loss_fn, pearson_loss_fn, 
                           WEIGHT_MSE * m_loss + 
                           WEIGHT_PEARSON * p_loss)
             
-            # Đảm bảo không bị cộng NaN vào metrics nếu validation data có vấn đề
             if not (torch.isnan(total_loss) or torch.isinf(total_loss)):
                 metrics['total'] += total_loss.item()
                 metrics['contrast'] += c_loss.item()
@@ -253,14 +249,12 @@ if __name__ == "__main__":
             torch.save(model.state_dict(), "best_multitask_model.pth")
             print(f"*** New Best Model Saved (Validation MSE: {best_val_mse:.6f})")
             
-            # Vẽ Similarity Matrix cho Best Model (chỉ thực hiện ở epoch cuối hoặc khi cần)
             if epoch == 199:
                 plot_best_similarity_matrix(last_emb_ecg, last_emb_ppg, epoch)
                 
         if epoch % 10 == 0:
             plot_losses_combined(history)
             
-        # FIX: Scheduler theo dõi biến động của Validation MSE
         scheduler.step(val_metrics['mse'])
 
     print("Training Finished.")
